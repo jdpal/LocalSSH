@@ -1,4 +1,6 @@
 use std::{
+    fs::{self, File},
+    io,
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     time::Duration,
@@ -17,6 +19,14 @@ pub struct RemoteEntry {
     pub kind: String,
     pub size: Option<u64>,
     pub modified: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteUpload {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
 }
 
 fn expand_tilde(value: &str) -> PathBuf {
@@ -66,7 +76,7 @@ fn verify_known_host(session: &Session, server: &ServerProfile) -> Result<(), St
     }
 }
 
-fn authenticate(session: &Session, server: &ServerProfile) -> Result<(), String> {
+fn authenticate(session: &Session, server: &ServerProfile, password: Option<&str>) -> Result<(), String> {
     if session.userauth_agent(&server.username).is_ok() && session.authenticated() {
         return Ok(());
     }
@@ -76,16 +86,26 @@ fn authenticate(session: &Session, server: &ServerProfile) -> Result<(), String>
             return Ok(());
         }
     }
-    Err("SFTP authentication failed. Load your key into ssh-agent, or use an unencrypted identity file. Password/passphrase prompts remain available in the Terminal tab.".into())
+    if let Some(password) = password.filter(|value| !value.is_empty()) {
+        return session.userauth_password(&server.username, password)
+            .map_err(|_| "SFTP_AUTH_FAILED: password rejected".to_string())
+            .and_then(|_| if session.authenticated() { Ok(()) } else { Err("SFTP_AUTH_FAILED: password rejected".to_string()) });
+    }
+    Err("SFTP_AUTH_REQUIRED: key and ssh-agent authentication were unavailable".into())
 }
 
-pub fn list_remote(server: &ServerProfile, path: &str) -> Result<Vec<RemoteEntry>, String> {
+fn connected_session(server: &ServerProfile, password: Option<&str>) -> Result<Session, String> {
     let tcp = connect_tcp(server)?;
     let mut session = Session::new().map_err(|e| format!("Could not initialise SSH session: {e}"))?;
     session.set_tcp_stream(tcp);
     session.handshake().map_err(|e| format!("SSH handshake failed: {e}"))?;
     verify_known_host(&session, server)?;
-    authenticate(&session, server)?;
+    authenticate(&session, server, password)?;
+    Ok(session)
+}
+
+pub fn list_remote(server: &ServerProfile, path: &str, password: Option<&str>) -> Result<Vec<RemoteEntry>, String> {
+    let session = connected_session(server, password)?;
 
     let sftp = session.sftp().map_err(|e| format!("Could not start SFTP subsystem: {e}"))?;
     let remote_path = if path.trim().is_empty() { "/" } else { path.trim() };
@@ -110,4 +130,47 @@ pub fn list_remote(server: &ServerProfile, path: &str) -> Result<Vec<RemoteEntry
         b_dir.cmp(&a_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(entries)
+}
+
+pub fn upload_remote(
+    server: &ServerProfile,
+    local_path: &str,
+    remote_dir: &str,
+    password: Option<&str>,
+    replace: bool,
+) -> Result<RemoteUpload, String> {
+    let local = Path::new(local_path);
+    let metadata = fs::metadata(local).map_err(|e| format!("Could not read local file {local_path}: {e}"))?;
+    if metadata.is_dir() {
+        return Err(format!("SFTP_DIRECTORY_UNSUPPORTED:{local_path}"));
+    }
+
+    let file_name = local.file_name()
+        .ok_or_else(|| format!("Could not determine local filename for {local_path}"))?;
+    let remote_base = if remote_dir.trim().is_empty() { "/" } else { remote_dir.trim() };
+    let remote_path = Path::new(remote_base).join(file_name);
+
+    let session = connected_session(server, password)?;
+    let sftp = session.sftp().map_err(|e| format!("Could not start SFTP subsystem: {e}"))?;
+
+    if let Ok(stat) = sftp.stat(&remote_path) {
+        if stat.file_type().is_dir() {
+            return Err(format!("Remote target is a directory: {}", remote_path.to_string_lossy()));
+        }
+        if !replace {
+            return Err(format!("SFTP_FILE_EXISTS:{}", remote_path.to_string_lossy()));
+        }
+    }
+
+    let mut source = File::open(local).map_err(|e| format!("Could not open local file {local_path}: {e}"))?;
+    let mut target = sftp.create(&remote_path)
+        .map_err(|e| format!("Could not create remote file {}: {e}", remote_path.to_string_lossy()))?;
+    io::copy(&mut source, &mut target)
+        .map_err(|e| format!("Could not upload {}: {e}", remote_path.to_string_lossy()))?;
+
+    Ok(RemoteUpload {
+        name: file_name.to_string_lossy().to_string(),
+        path: remote_path.to_string_lossy().to_string(),
+        size: metadata.len(),
+    })
 }

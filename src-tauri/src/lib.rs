@@ -3,11 +3,13 @@ mod server;
 mod sftp;
 mod terminal;
 
+use std::process::Command;
+
 use tauri::{Manager, State};
 
 use db::Database;
 use server::{ServerInput, ServerProfile};
-use sftp::RemoteEntry;
+use sftp::{RemoteEntry, RemoteUpload};
 use terminal::TerminalManager;
 
 pub struct AppState {
@@ -54,9 +56,58 @@ fn stop_ssh(state: State<'_, AppState>, session_id: String) -> Result<(), String
 }
 
 #[tauri::command]
-fn sftp_list(state: State<'_, AppState>, server_id: String, path: String) -> Result<Vec<RemoteEntry>, String> {
+fn sftp_list(state: State<'_, AppState>, server_id: String, path: String, password: Option<String>) -> Result<Vec<RemoteEntry>, String> {
     let server = state.db.get_server(&server_id)?;
-    sftp::list_remote(&server, &path)
+    sftp::list_remote(&server, &path, password.as_deref())
+}
+
+#[tauri::command]
+fn sftp_upload(
+    state: State<'_, AppState>,
+    server_id: String,
+    local_path: String,
+    remote_dir: String,
+    password: Option<String>,
+    replace: bool,
+) -> Result<RemoteUpload, String> {
+    let server = state.db.get_server(&server_id)?;
+    sftp::upload_remote(&server, &local_path, &remote_dir, password.as_deref(), replace)
+}
+
+#[tauri::command]
+fn pick_local_files() -> Result<Vec<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = r#"
+set selectedFiles to choose file with prompt "Choose files to upload" with multiple selections allowed
+set outputText to ""
+repeat with selectedFile in selectedFiles
+    set outputText to outputText & POSIX path of selectedFile & linefeed
+end repeat
+return outputText
+"#;
+        let output = Command::new("/usr/bin/osascript")
+            .arg("-e")
+            .arg(script)
+            .output()
+            .map_err(|e| format!("Could not open the macOS file picker: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("User canceled") || stderr.contains("-128") {
+                return Ok(Vec::new());
+            }
+            return Err(format!("File picker failed: {}", stderr.trim()));
+        }
+        return Ok(String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    Err("LocalSSH file picking is currently supported on macOS only".into())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -77,7 +128,9 @@ pub fn run() {
             write_ssh,
             resize_ssh,
             stop_ssh,
-            sftp_list
+            sftp_list,
+            sftp_upload,
+            pick_local_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running LocalSSH");

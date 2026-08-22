@@ -1,14 +1,21 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { deleteServer, listServers, upsertServer } from './api';
 import { groupAndFilterServers } from './serverModel.js';
-import { addSessionTab, removeSessionTab } from './terminalModel.js';
+import { addSessionTab, removeSessionTab, terminalStackState } from './terminalModel.js';
 import FileBrowser from './components/FileBrowser';
 import TerminalPane from './components/TerminalPane';
 import type { ServerInput, ServerProfile } from './types';
 
 type View = 'terminal' | 'files';
 type SessionStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
-type TerminalTab = { id: string; serverId: string; label: string; backendSessionId: string | null; status: SessionStatus };
+type TerminalTab = {
+  id: string;
+  serverId: string;
+  server: ServerProfile;
+  label: string;
+  backendSessionId: string | null;
+  status: SessionStatus;
+};
 
 const emptyForm: ServerInput = { name: '', host: '', port: 22, username: '', groupName: 'Servers', favourite: false, identityFile: '' };
 
@@ -31,6 +38,7 @@ export default function App() {
 
   const selected = servers.find((server) => server.id === selectedId) ?? null;
   const groups = useMemo(() => groupAndFilterServers(servers, query), [servers, query]);
+  const terminalState = terminalStackState(tabs, view);
 
   async function saveServer(event: FormEvent) {
     event.preventDefault();
@@ -121,12 +129,26 @@ export default function App() {
         )}
 
         <div className="workspace-body">
-          {view === 'terminal' ? (
-            tabs.length ? <div className="terminal-stack">{tabs.map((tab) => {
-              const server = servers.find((item) => item.id === tab.serverId);
-              return server ? <TerminalPane key={tab.id} server={server} active={tab.id === activeTabId} onStatus={(status) => updateTabStatus(tab.id, status)} /> : null;
-            })}</div> : <div className="terminal-placeholder"><div className="terminal-chrome"><span className="traffic red"/><span className="traffic amber"/><span className="traffic green"/><span>SSH terminal</span></div><pre>{selected ? `Ready for ${selected.name}.\n\nClick Connect to start /usr/bin/ssh.` : 'Choose a server from the sidebar.'}</pre></div>
-          ) : <FileBrowser server={selected} />}
+          {terminalState.mounted && (
+            <div className={`workspace-panel ${terminalState.visible ? 'active' : 'hidden'}`}>
+              <div className="terminal-stack">{tabs.map((tab) => (
+                <TerminalPane
+                  key={tab.id}
+                  server={tab.server}
+                  active={terminalState.visible && tab.id === activeTabId}
+                  onStatus={(status) => updateTabStatus(tab.id, status)}
+                />
+              ))}</div>
+            </div>
+          )}
+
+          {!terminalState.mounted && view === 'terminal' && (
+            <div className="terminal-placeholder"><div className="terminal-chrome"><span className="traffic red"/><span className="traffic amber"/><span className="traffic green"/><span>SSH terminal</span></div><pre>{selected ? `Ready for ${selected.name}.\n\nClick Connect to start /usr/bin/ssh.` : 'Choose a server from the sidebar.'}</pre></div>
+          )}
+
+          <div className={`workspace-panel ${view === 'files' ? 'active' : 'hidden'}`}>
+            <FileBrowser server={selected} active={view === 'files'} />
+          </div>
         </div>
       </section>
 

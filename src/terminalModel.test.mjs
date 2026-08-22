@@ -8,7 +8,7 @@ test('adds an independent terminal tab for a server', () => {
   const current = [];
   const next = addSessionTab(current, profile, 'tab-1');
   assert.equal(current.length, 0);
-  assert.deepEqual(next[0], { id: 'tab-1', serverId: 's1', label: 'Web-01', backendSessionId: null, status: 'idle' });
+  assert.deepEqual(next[0], { id: 'tab-1', serverId: 's1', server: profile, label: 'Web-01', backendSessionId: null, status: 'idle' });
 });
 
 test('removes only the requested terminal tab', () => {
@@ -17,4 +17,15 @@ test('removes only the requested terminal tab', () => {
     { id: 'tab-2', serverId: 's2', label: 'DB-01', backendSessionId: 'pty-2', status: 'connected' }
   ];
   assert.deepEqual(removeSessionTab(tabs, 'tab-1').map((tab) => tab.id), ['tab-2']);
+});
+
+test('keeps terminal stack mounted while Files view is active', async () => {
+  const { terminalStackState } = await import('./terminalModel.js');
+  const tabs = [{ id: 'tab-1', serverId: 's1', label: 'Web-01', status: 'connected' }];
+  assert.deepEqual(terminalStackState(tabs, 'files'), { mounted: true, visible: false });
+});
+
+test('stores a server snapshot in each terminal tab so deleting a profile does not end the session', () => {
+  const tab = addSessionTab([], profile, 'tab-snapshot')[0];
+  assert.deepEqual(tab.server, profile);
 });

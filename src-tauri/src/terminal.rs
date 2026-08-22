@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize, PtySystem};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
@@ -21,6 +21,16 @@ struct TerminalSession {
 #[derive(Default)]
 pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
+}
+
+impl Drop for TerminalManager {
+    fn drop(&mut self) {
+        if let Ok(sessions) = self.sessions.get_mut() {
+            for (_, mut session) in sessions.drain() {
+                let _ = session.child.kill();
+            }
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]

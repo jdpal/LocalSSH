@@ -60,7 +60,7 @@ export async function stopSsh(sessionId: string): Promise<void> {
   await invoke('stop_ssh', { sessionId });
 }
 
-export async function listRemote(serverId: string, path: string) {
+export async function listRemote(serverId: string, path: string, password: string | null = null) {
   if (!isTauri()) {
     return [
       { name: 'apps', path: `${path === '/' ? '' : path}/apps`, kind: 'directory', size: null, modified: null },
@@ -68,5 +68,18 @@ export async function listRemote(serverId: string, path: string) {
       { name: '.bashrc', path: `${path === '/' ? '' : path}/.bashrc`, kind: 'file', size: 3421, modified: null }
     ];
   }
-  return invoke('sftp_list', { serverId, path });
+  return invoke('sftp_list', { serverId, path, password });
+}
+
+export async function pickLocalFiles(): Promise<string[]> {
+  if (!isTauri()) return [];
+  return invoke<string[]>('pick_local_files');
+}
+
+export async function uploadRemote(serverId: string, localPath: string, remoteDir: string, password: string | null = null, replace = false): Promise<{ name: string; path: string; size: number }> {
+  if (!isTauri()) {
+    const name = localPath.replace(/\\/g, '/').split('/').pop() || 'file';
+    return { name, path: `${remoteDir === '/' ? '' : remoteDir}/${name}`, size: 0 };
+  }
+  return invoke('sftp_upload', { serverId, localPath, remoteDir, password, replace });
 }

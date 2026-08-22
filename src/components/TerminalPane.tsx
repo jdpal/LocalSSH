@@ -19,6 +19,7 @@ export default function TerminalPane({ server, active, onStatus }: Props) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const sessionRef = useRef<string | null>(null);
+  const activeRef = useRef(active);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -53,7 +54,7 @@ export default function TerminalPane({ server, active, onStatus }: Props) {
     });
 
     const observer = new ResizeObserver(() => {
-      if (!disposed) {
+      if (!disposed && activeRef.current) {
         try { fit.fit(); } catch { /* xterm may be between layout frames */ }
       }
     });
@@ -107,6 +108,7 @@ export default function TerminalPane({ server, active, onStatus }: Props) {
   }, [server.id]);
 
   useEffect(() => {
+    activeRef.current = active;
     if (active) requestAnimationFrame(() => fitRef.current?.fit());
   }, [active]);
 
