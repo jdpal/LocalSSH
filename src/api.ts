@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { ServerInput, ServerProfile } from './types';
+import type { RemoteEntry, ServerInput, ServerProfile } from './types';
 
 const demoServers: ServerProfile[] = [
   { id: 'demo-web-01', name: 'Web-01', host: '10.20.0.15', port: 22, username: 'jd', groupName: 'Production', favourite: true },
@@ -60,7 +60,7 @@ export async function stopSsh(sessionId: string): Promise<void> {
   await invoke('stop_ssh', { sessionId });
 }
 
-export async function listRemote(serverId: string, path: string, password: string | null = null) {
+export async function listRemote(serverId: string, path: string, password: string | null = null): Promise<RemoteEntry[]> {
   if (!isTauri()) {
     return [
       { name: 'apps', path: `${path === '/' ? '' : path}/apps`, kind: 'directory', size: null, modified: null },
@@ -68,7 +68,7 @@ export async function listRemote(serverId: string, path: string, password: strin
       { name: '.bashrc', path: `${path === '/' ? '' : path}/.bashrc`, kind: 'file', size: 3421, modified: null }
     ];
   }
-  return invoke('sftp_list', { serverId, path, password });
+  return invoke<RemoteEntry[]>('sftp_list', { serverId, path, password });
 }
 
 export async function pickLocalFiles(): Promise<string[]> {

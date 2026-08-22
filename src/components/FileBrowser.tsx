@@ -63,7 +63,7 @@ export default function FileBrowser({ server, active }: Props) {
     void listRemote(server.id, path, password || null)
       .then((items) => {
         if (!cancelled) {
-          setEntries(sortRemoteEntries(items) as RemoteEntry[]);
+          setEntries(sortRemoteEntries(items));
           setPasswordInput('');
         }
       })
