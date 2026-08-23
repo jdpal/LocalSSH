@@ -7,11 +7,21 @@ export interface ServerProfile {
   groupName: string;
   favourite: boolean;
   identityFile?: string | null;
+  sftpUsername?: string | null;
+  useSshCredentialsForSftp: boolean;
+  hasSshPassword: boolean;
+  hasSftpPassword: boolean;
   lastConnectedAt?: string | null;
 }
 
-export interface ServerInput extends Omit<ServerProfile, 'id' | 'lastConnectedAt'> {
+export interface ServerInput extends Omit<ServerProfile, 'id' | 'lastConnectedAt' | 'hasSshPassword' | 'hasSftpPassword'> {
   id?: string;
+  sshPassword?: string | null;
+  clearSshPassword?: boolean;
+  sftpPassword?: string | null;
+  clearSftpPassword?: boolean;
+  hasSshPassword?: boolean;
+  hasSftpPassword?: boolean;
 }
 
 export interface RemoteEntry {

@@ -29,3 +29,15 @@ test('stores a server snapshot in each terminal tab so deleting a profile does n
   const tab = addSessionTab([], profile, 'tab-snapshot')[0];
   assert.deepEqual(tab.server, profile);
 });
+
+test('reports a server connected only when at least one SSH tab is connected', async () => {
+  const model = await import('./terminalModel.js');
+  assert.equal(typeof model.serverConnectionState, 'function');
+  const tabs = [
+    { id: 'a', serverId: 's1', status: 'connecting' },
+    { id: 'b', serverId: 's2', status: 'connected' }
+  ];
+  assert.equal(model.serverConnectionState(tabs, 's1'), 'disconnected');
+  assert.equal(model.serverConnectionState(tabs, 's2'), 'connected');
+  assert.equal(model.serverConnectionState(tabs, 'missing'), 'disconnected');
+});

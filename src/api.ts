@@ -2,10 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 import type { RemoteEntry, ServerInput, ServerProfile } from './types';
 
 const demoServers: ServerProfile[] = [
-  { id: 'demo-web-01', name: 'Web-01', host: '10.20.0.15', port: 22, username: 'jd', groupName: 'Production', favourite: true },
-  { id: 'demo-db-01', name: 'DB-01', host: '10.20.0.30', port: 22, username: 'postgres', groupName: 'Production', favourite: false },
-  { id: 'demo-proxmox', name: 'Proxmox', host: '192.168.1.5', port: 22, username: 'root', groupName: 'Home Lab', favourite: true },
-  { id: 'demo-nas', name: 'NAS', host: '192.168.1.10', port: 22, username: 'jd', groupName: 'Home Lab', favourite: false }
+  { id: 'demo-web-01', name: 'Web-01', host: '10.20.0.15', port: 22, username: 'jd', groupName: 'Production', favourite: true, useSshCredentialsForSftp: true, hasSshPassword: false, hasSftpPassword: false },
+  { id: 'demo-db-01', name: 'DB-01', host: '10.20.0.30', port: 22, username: 'postgres', groupName: 'Production', favourite: false, useSshCredentialsForSftp: true, hasSshPassword: false, hasSftpPassword: false }
 ];
 
 let browserServers = [...demoServers];
@@ -20,16 +18,19 @@ export async function listServers(): Promise<ServerProfile[]> {
 }
 
 export async function upsertServer(input: ServerInput): Promise<ServerProfile> {
+  const { sshPassword = null, clearSshPassword = false, sftpPassword = null, clearSftpPassword = false, ...profileInput } = input;
   if (!isTauri()) {
     const profile: ServerProfile = {
-      ...input,
+      ...profileInput,
       id: input.id ?? crypto.randomUUID(),
+      hasSshPassword: clearSshPassword ? false : Boolean(sshPassword) || Boolean(input.hasSshPassword),
+      hasSftpPassword: profileInput.useSshCredentialsForSftp ? false : (clearSftpPassword ? false : Boolean(sftpPassword) || Boolean(input.hasSftpPassword)),
       lastConnectedAt: null
     };
     browserServers = [...browserServers.filter((item) => item.id !== profile.id), profile];
     return profile;
   }
-  return invoke<ServerProfile>('upsert_server', { input });
+  return invoke<ServerProfile>('upsert_server', { input: profileInput, sshPassword, clearSshPassword, sftpPassword, clearSftpPassword });
 }
 
 export async function deleteServer(id: string): Promise<void> {
@@ -60,6 +61,11 @@ export async function stopSsh(sessionId: string): Promise<void> {
   await invoke('stop_ssh', { sessionId });
 }
 
+export async function closeSftp(serverId: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('sftp_close', { serverId });
+}
+
 export async function listRemote(serverId: string, path: string, password: string | null = null): Promise<RemoteEntry[]> {
   if (!isTauri()) {
     return [
@@ -82,4 +88,16 @@ export async function uploadRemote(serverId: string, localPath: string, remoteDi
     return { name, path: `${remoteDir === '/' ? '' : remoteDir}/${name}`, size: 0 };
   }
   return invoke('sftp_upload', { serverId, localPath, remoteDir, password, replace });
+}
+export async function pickDownloadDirectory(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>('pick_download_directory');
+}
+
+export async function downloadRemote(serverId: string, remotePath: string, localDir: string, password: string | null = null): Promise<{ name: string; path: string; size: number }> {
+  if (!isTauri()) {
+    const name = remotePath.replace(/\\/g, '/').split('/').pop() || 'file';
+    return { name, path: `${localDir.replace(/\/+$/, '')}/${name}`, size: 0 };
+  }
+  return invoke('sftp_download', { serverId, remotePath, localDir, password });
 }

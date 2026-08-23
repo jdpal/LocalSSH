@@ -22,3 +22,8 @@ export function terminalStackState(tabs, view) {
     visible: view === 'terminal'
   };
 }
+
+/** @param {Array<any>} tabs @param {string} serverId */
+export function serverConnectionState(tabs, serverId) {
+  return tabs.some((tab) => tab.serverId === serverId && tab.status === 'connected') ? 'connected' : 'disconnected';
+}
