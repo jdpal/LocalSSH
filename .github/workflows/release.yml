@@ -1,0 +1,122 @@
+name: Release LocalSSH
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.1.0
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag || '' }}
+  cancel-in-progress: false
+
+jobs:
+  macos-universal:
+    name: Build and publish universal macOS release
+    runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      APPLE_SIGNING_IDENTITY: '-'
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Rust targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          TAURI_VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          CARGO_VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          TAG_VERSION="${RELEASE_TAG#v}"
+          test "$VERSION" = "$TAURI_VERSION"
+          test "$VERSION" = "$CARGO_VERSION"
+          test "$VERSION" = "$TAG_VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Build universal macOS app and DMG
+        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          APP_PATH="$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -name 'LocalSSH.app' -print -quit)"
+          DMG_PATH="$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$APP_PATH"
+          test -n "$DMG_PATH"
+
+          mkdir -p release-assets
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$APP_PATH" \
+            "release-assets/LocalSSH-${VERSION}-macOS-universal.zip"
+          cp "$DMG_PATH" "release-assets/LocalSSH_${VERSION}_macOS_universal.dmg"
+          cp src-tauri/app-icon.png release-assets/LocalSSH-icon.png
+
+          (
+            cd release-assets
+            shasum -a 256 \
+              "LocalSSH_${VERSION}_macOS_universal.dmg" \
+              "LocalSSH-${VERSION}-macOS-universal.zip" \
+              LocalSSH-icon.png > SHA256SUMS.txt
+          )
+
+          ls -lh release-assets
+
+      - name: Preserve build assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalSSH-${{ env.VERSION }}-macOS-universal
+          path: release-assets/*
+          if-no-files-found: error
+
+      - name: Create or update GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="LocalSSH ${RELEASE_TAG}"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" \
+              --title "$TITLE" \
+              --notes-file RELEASE_NOTES.md
+            gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release-assets/* \
+              --title "$TITLE" \
+              --notes-file RELEASE_NOTES.md \
+              --target "$GITHUB_SHA"
+          fi
