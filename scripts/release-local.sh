@@ -60,7 +60,9 @@ npm install
 npm test
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
+npm run tauri icon src-tauri/app-icon.png
 
+rm -rf src-tauri/target/universal-apple-darwin/release/bundle
 APPLE_SIGNING_IDENTITY="-" npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
 
 BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
@@ -71,6 +73,23 @@ if [[ -z "$APP_PATH" || -z "$DMG_PATH" ]]; then
   echo "ERROR: Tauri build completed without the expected .app or .dmg bundle."
   exit 1
 fi
+
+ICON_PATH="$APP_PATH/Contents/Resources/icon.icns"
+PLIST_PATH="$APP_PATH/Contents/Info.plist"
+if [[ ! -f "$ICON_PATH" ]]; then
+  echo "ERROR: Packaged app is missing $ICON_PATH"
+  exit 1
+fi
+if [[ ! -f "$PLIST_PATH" ]]; then
+  echo "ERROR: Packaged app is missing $PLIST_PATH"
+  exit 1
+fi
+BUNDLE_ICON="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$PLIST_PATH")"
+if [[ "$BUNDLE_ICON" != "icon.icns" && "$BUNDLE_ICON" != "icon" ]]; then
+  echo "ERROR: CFBundleIconFile is '$BUNDLE_ICON', expected icon.icns"
+  exit 1
+fi
+echo "Verified packaged icon: $ICON_PATH ($BUNDLE_ICON)"
 
 ASSET_DIR="release-assets/$TAG"
 rm -rf "$ASSET_DIR"

@@ -34,3 +34,28 @@ test('local release artifacts are ignored by Git', () => {
   const gitignore = read('.gitignore');
   assert.match(gitignore, /^release-assets\/$/m);
 });
+
+test('Tauri bundle explicitly declares the generated application icons', () => {
+  const config = JSON.parse(read('src-tauri/tauri.conf.json'));
+  assert.deepEqual(config.bundle.icon, [
+    'icons/32x32.png',
+    'icons/128x128.png',
+    'icons/128x128@2x.png',
+    'icons/icon.icns',
+    'icons/icon.ico',
+  ]);
+});
+
+test('release workflow regenerates and validates the packaged macOS icon', () => {
+  const workflow = read('.github/workflows/release.yml');
+  assert.match(workflow, /npm run tauri icon src-tauri\/app-icon\.png/);
+  assert.match(workflow, /Contents\/Resources\/icon\.icns/);
+  assert.match(workflow, /CFBundleIconFile/);
+});
+
+test('local release script regenerates and validates the packaged macOS icon', () => {
+  const script = read('scripts/release-local.sh');
+  assert.match(script, /npm run tauri icon src-tauri\/app-icon\.png/);
+  assert.match(script, /Contents\/Resources\/icon\.icns/);
+  assert.match(script, /CFBundleIconFile/);
+});

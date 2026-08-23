@@ -66,8 +66,13 @@ jobs:
       - name: Check Rust backend
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
+      - name: Regenerate application icons
+        run: npm run tauri icon src-tauri/app-icon.png
+
       - name: Build universal macOS app and DMG
-        run: npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+        run: |
+          rm -rf src-tauri/target/universal-apple-darwin/release/bundle
+          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
 
       - name: Package release assets
         shell: bash
@@ -78,6 +83,14 @@ jobs:
           DMG_PATH="$(find "$BUNDLE_ROOT/dmg" -maxdepth 1 -name '*.dmg' -print -quit)"
           test -n "$APP_PATH"
           test -n "$DMG_PATH"
+
+          ICON_PATH="$APP_PATH/Contents/Resources/icon.icns"
+          PLIST_PATH="$APP_PATH/Contents/Info.plist"
+          test -f "$ICON_PATH"
+          test -f "$PLIST_PATH"
+          BUNDLE_ICON="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$PLIST_PATH")"
+          test "$BUNDLE_ICON" = "icon.icns" -o "$BUNDLE_ICON" = "icon"
+          echo "Verified packaged icon: $ICON_PATH ($BUNDLE_ICON)"
 
           mkdir -p release-assets
           ditto -c -k --sequesterRsrc --keepParent \
