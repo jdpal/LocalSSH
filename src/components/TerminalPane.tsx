@@ -9,6 +9,10 @@ type Props = { server: ServerProfile; active: boolean; onStatus: (status: 'conne
 type SessionEvent = { sessionId: string };
 type OutputEvent = SessionEvent & { data: string };
 
+const DEFAULT_FONT_SIZE = 12;
+const MIN_FONT_SIZE = 9;
+const MAX_FONT_SIZE = 24;
+
 export default function TerminalPane({ server, active, onStatus }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -26,7 +30,7 @@ export default function TerminalPane({ server, active, onStatus }: Props) {
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: 12,
+      fontSize: DEFAULT_FONT_SIZE,
       lineHeight: 1.2,
       scrollback: 10000,
       minimumContrastRatio: 4.5,
@@ -56,6 +60,85 @@ export default function TerminalPane({ server, active, onStatus }: Props) {
     });
     const fit = new FitAddon();
     terminal.loadAddon(fit); terminal.open(hostRef.current); fit.fit(); fitRef.current = fit;
+
+    const refit = () => requestAnimationFrame(() => { try { fit.fit(); } catch { /* layout transition */ } });
+    const setFontSize = (next: number) => {
+      terminal.options.fontSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, next));
+      refit();
+    };
+
+    terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') return true;
+      const key = event.key.toLowerCase();
+
+      if (event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (key === 'k') {
+          event.preventDefault();
+          terminal.clear();
+          terminal.scrollToBottom();
+          return false;
+        }
+        if (key === 'c') {
+          event.preventDefault();
+          if (terminal.hasSelection()) {
+            const selected = terminal.getSelection();
+            if (selected && navigator.clipboard?.writeText) void navigator.clipboard.writeText(selected).catch(() => undefined);
+          }
+          return false;
+        }
+        if (key === 'v') {
+          event.preventDefault();
+          if (navigator.clipboard?.readText) {
+            void navigator.clipboard.readText().then((text) => { if (text) terminal.paste(text); }).catch(() => undefined);
+          }
+          return false;
+        }
+        if (key === 'a') {
+          event.preventDefault();
+          terminal.selectAll();
+          return false;
+        }
+        if (key === '+' || key === '=') {
+          event.preventDefault();
+          setFontSize(Number(terminal.options.fontSize ?? DEFAULT_FONT_SIZE) + 1);
+          return false;
+        }
+        if (key === '-') {
+          event.preventDefault();
+          setFontSize(Number(terminal.options.fontSize ?? DEFAULT_FONT_SIZE) - 1);
+          return false;
+        }
+        if (key === '0') {
+          event.preventDefault();
+          setFontSize(DEFAULT_FONT_SIZE);
+          return false;
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          terminal.scrollToTop();
+          return false;
+        }
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          terminal.scrollToBottom();
+          return false;
+        }
+      }
+
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'PageUp') {
+        event.preventDefault();
+        terminal.scrollPages(-1);
+        return false;
+      }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key === 'PageDown') {
+        event.preventDefault();
+        terminal.scrollPages(1);
+        return false;
+      }
+
+      return true;
+    });
+
     onStatus('connecting');
 
     const dataSubscription = terminal.onData((data) => { const session = sessionRef.current; if (session) void writeSsh(session, data); });
