@@ -23,7 +23,37 @@ export default function TerminalPane({ server, active, onStatus }: Props) {
     let unlistenConnected: (() => void) | undefined;
     let unlistenExit: (() => void) | undefined;
 
-    const terminal = new Terminal({ cursorBlink: true, fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace', fontSize: 12, lineHeight: 1.2, scrollback: 10000, theme: { background: '#080a0d', foreground: '#d8dee8', cursor: '#e5e9f0' } });
+    const terminal = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 12,
+      lineHeight: 1.2,
+      scrollback: 10000,
+      minimumContrastRatio: 4.5,
+      theme: {
+        background: '#080a0d',
+        foreground: '#d8dee8',
+        cursor: '#f2f4f8',
+        cursorAccent: '#080a0d',
+        selectionBackground: '#334155',
+        black: '#1b1f27',
+        red: '#ff6b6b',
+        green: '#69db7c',
+        yellow: '#ffd43b',
+        blue: '#74c0fc',
+        magenta: '#da77f2',
+        cyan: '#66d9e8',
+        white: '#dee2e6',
+        brightBlack: '#868e96',
+        brightRed: '#ff8787',
+        brightGreen: '#8ce99a',
+        brightYellow: '#ffe066',
+        brightBlue: '#a5d8ff',
+        brightMagenta: '#e599f7',
+        brightCyan: '#99e9f2',
+        brightWhite: '#f8f9fa',
+      },
+    });
     const fit = new FitAddon();
     terminal.loadAddon(fit); terminal.open(hostRef.current); fit.fit(); fitRef.current = fit;
     onStatus('connecting');

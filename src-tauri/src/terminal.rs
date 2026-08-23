@@ -70,6 +70,9 @@ impl TerminalManager {
             .map_err(|e| format!("Could not create terminal: {e}"))?;
 
         let mut command = CommandBuilder::new("/usr/bin/ssh");
+        command.env("TERM", "xterm-256color");
+        command.env("COLORTERM", "truecolor");
+        command.env("TERM_PROGRAM", "LocalSSH");
         for arg in build_ssh_args(server) { command.arg(arg); }
         let child = pair.slave.spawn_command(command).map_err(|e| format!("Could not start /usr/bin/ssh: {e}"))?;
         drop(pair.slave);

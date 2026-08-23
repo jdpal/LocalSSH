@@ -1,22 +1,31 @@
-# LocalSSH v0.2.1
+# LocalSSH v0.2.2
 
-LocalSSH v0.2.1 is a macOS SSH/SFTP reliability hotfix on top of the v0.2.0 security-hardened release.
+LocalSSH v0.2.2 is a terminal compatibility and colour-rendering hotfix.
 
 ## Fixed
 
-- Fixes OpenSSH ControlMaster socket creation when macOS provides a long temporary-directory path.
-- Uses a short private `/tmp/lssh-...` control directory and compact hashed socket names.
-- Fixes SFTP directory navigation producing duplicated paths such as `/etc/etc`.
-- Canonicalizes root and nested SFTP paths before displaying or sending them to OpenSSH.
-- Handles OpenSSH listings that return absolute or parent-prefixed names.
-- Parent navigation remains bounded at `/` and repeated slashes / dot segments are normalized.
+- Sets the SSH PTY terminal type to `xterm-256color`.
+- Fixes remote commands that reported `TERM environment variable not set`.
+- Advertises local true-colour terminal metadata to the OpenSSH client.
+- Adds an explicit ANSI 16-colour palette, bright colours and improved terminal contrast.
+- Preserves ANSI escape sequences from remote applications.
+- Keeps all v0.2.0 security hardening and v0.2.1 SSH/SFTP reliability fixes.
 
-## Security
+## Terminal validation
 
-- Retains all v0.2.0 security hardening.
-- SFTP continues to use macOS OpenSSH rather than libssh2.
-- Saved passwords continue to use native macOS Keychain APIs.
-- Local upload/download access continues to use opaque backend file grants.
+After connecting:
+
+```bash
+echo $TERM
+tput colors
+printf '\033[31mRED\033[0m \033[32mGREEN\033[0m \033[34mBLUE\033[0m\n'
+```
+
+Expected:
+
+- `TERM` is `xterm-256color`
+- `tput colors` reports `256`
+- ANSI red, green and blue render visibly
 
 ## Distribution
 
