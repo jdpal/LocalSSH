@@ -22,12 +22,12 @@ test('local release script validates, builds and uploads release assets', () => 
   assert.match(script, /gh release/);
 });
 
-test('release notes describe the first public macOS release', () => {
+test('release notes describe the v0.1.1 macOS icon fix release', () => {
   const notes = read('RELEASE_NOTES.md');
-  assert.match(notes, /LocalSSH v0\.1\.0/);
-  assert.match(notes, /SSH/);
-  assert.match(notes, /SFTP/);
-  assert.match(notes, /Keychain/);
+  assert.match(notes, /LocalSSH v0\.1\.1/);
+  assert.match(notes, /macOS/);
+  assert.match(notes, /icon/i);
+  assert.match(notes, /DMG/);
 });
 
 test('local release artifacts are ignored by Git', () => {

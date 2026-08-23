@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-TAG="${1:-v0.1.0}"
+TAG="${1:-v0.1.1}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
