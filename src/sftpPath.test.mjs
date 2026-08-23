@@ -32,3 +32,27 @@ test('native SFTP listing canonicalizes requested paths and prefixed listing nam
   assert.match(source, /let canonical_path = normalize_remote_path\(path\);/);
   assert.match(source, /parse_ls_line\(line, &canonical_path\)/);
 });
+
+test('filters resolved current and parent navigation entries from SFTP listings', async () => {
+  const { filterNavigationalEntries } = await import('./sftpModel.js');
+  const entries = [
+    { name: 'Downloads', path: '/home/jatin/Downloads', kind: 'directory' },
+    { name: 'jatin', path: '/home/jatin', kind: 'directory' },
+    { name: 'notes.txt', path: '/home/jatin/Downloads/notes.txt', kind: 'file' },
+    { name: 'Downloads', path: '/home/jatin/Downloads/Downloads', kind: 'directory' },
+  ];
+
+  assert.deepEqual(
+    filterNavigationalEntries(entries, '/home/jatin/Downloads').map((entry) => entry.path),
+    ['/home/jatin/Downloads/notes.txt', '/home/jatin/Downloads/Downloads']
+  );
+  assert.deepEqual(filterNavigationalEntries([{ name: '/', path: '/', kind: 'directory' }], '/'), []);
+});
+
+test('native SFTP parser filters absolute dot and dot-dot listing entries after normalization', () => {
+  const source = fs.readFileSync(new URL('../src-tauri/src/sftp.rs', import.meta.url), 'utf8');
+  assert.match(source, /fn remote_parent_path/);
+  assert.match(source, /if path == canonical_parent \|\| path == remote_parent_path\(&canonical_parent\)/);
+  assert.match(source, /parse_ls_line\(current_dir_line, "\/home\/jatin\/Downloads"\)\.is_none\(\)/);
+  assert.match(source, /parse_ls_line\(parent_dir_line, "\/home\/jatin\/Downloads"\)\.is_none\(\)/);
+});

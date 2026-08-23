@@ -39,6 +39,16 @@ export function parentRemotePath(path) {
   return `/${parts.slice(0, -1).join('/')}`;
 }
 
+/** @param {Array<any>} entries @param {string} currentPath */
+export function filterNavigationalEntries(entries, currentPath) {
+  const current = normalizeRemotePath(currentPath);
+  const parent = parentRemotePath(current);
+  return entries.filter((entry) => {
+    const entryPath = normalizeRemotePath(entry?.path ?? '');
+    return entryPath !== current && entryPath !== parent;
+  });
+}
+
 /** @param {Array<any>} entries */
 export function sortRemoteEntries(entries) {
   return [...entries].sort((a, b) => {

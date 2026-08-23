@@ -69,6 +69,14 @@ fn remote_join(dir: &str, name: &str) -> String {
     normalize_remote_path(&format!("{}/{}", normalize_remote_path(dir).trim_end_matches('/'), name.trim_start_matches('/')))
 }
 
+fn remote_parent_path(path: &str) -> String {
+    let canonical = normalize_remote_path(path);
+    if canonical == "/" { return "/".into(); }
+    let mut parts: Vec<&str> = canonical.split('/').filter(|part| !part.is_empty()).collect();
+    parts.pop();
+    if parts.is_empty() { "/".into() } else { format!("/{}", parts.join("/")) }
+}
+
 fn remote_entry_path(parent: &str, raw_name: &str) -> (String, String) {
     let parent = normalize_remote_path(parent);
     let raw = raw_name.trim();
@@ -243,6 +251,8 @@ fn parse_ls_line(line: &str, parent: &str) -> Option<RemoteEntry> {
     if let Some((left, _target)) = raw_name.split_once(" -> ") { raw_name = left.to_string(); }
     if raw_name == "." || raw_name == ".." || raw_name.is_empty() { return None; }
     let (name, path) = remote_entry_path(parent, &raw_name);
+    let canonical_parent = normalize_remote_path(parent);
+    if path == canonical_parent || path == remote_parent_path(&canonical_parent) { return None; }
     let kind = match mode.as_bytes().first().copied() {
         Some(b'd') => "directory",
         Some(b'l') => "symlink",
@@ -364,5 +374,21 @@ mod tests {
         let entry = parse_ls_line(line, "/etc").expect("entry");
         assert_eq!(entry.name, "ssh");
         assert_eq!(entry.path, "/etc/ssh");
+    }
+
+    #[test]
+    fn filters_absolute_dot_and_dot_dot_entries_after_normalization() {
+        let current_dir_line = "drwxr-xr-x 2 1000 1000 4096 Aug 23 22:44 /home/jatin/Downloads/.";
+        let parent_dir_line = "drwxr-xr-x 3 1000 1000 4096 Aug 18 11:48 /home/jatin/Downloads/..";
+        assert!(parse_ls_line(current_dir_line, "/home/jatin/Downloads").is_none());
+        assert!(parse_ls_line(parent_dir_line, "/home/jatin/Downloads").is_none());
+    }
+
+    #[test]
+    fn keeps_real_children_even_when_their_name_matches_the_current_directory_basename() {
+        let line = "drwxr-xr-x 2 1000 1000 4096 Aug 23 22:44 /home/jatin/Downloads/Downloads";
+        let entry = parse_ls_line(line, "/home/jatin/Downloads").expect("entry");
+        assert_eq!(entry.name, "Downloads");
+        assert_eq!(entry.path, "/home/jatin/Downloads/Downloads");
     }
 }
