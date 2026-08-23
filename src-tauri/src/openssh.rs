@@ -1,24 +1,62 @@
-use std::{fs, path::PathBuf};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    os::unix::fs::DirBuilderExt,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
+
+use uuid::Uuid;
 
 use crate::server::ServerProfile;
 
-fn safe_component(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars().take(18) {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-            out.push(ch);
-        } else {
-            out.push('_');
+// macOS Unix-domain socket paths are short (sun_path is roughly 104 bytes),
+// and OpenSSH may temporarily append a suffix while creating a control socket.
+// Keep our configured ControlPath comfortably below that limit.
+const MAX_CONTROL_PATH_BYTES: usize = 72;
+static CONTROL_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+fn create_private_control_dir() -> PathBuf {
+    for _ in 0..8 {
+        let nonce = Uuid::new_v4().simple().to_string();
+        let dir = PathBuf::from("/tmp").join(format!(
+            "lssh-{}-{}",
+            std::process::id(),
+            &nonce[..8]
+        ));
+
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(&dir) {
+            Ok(()) => return dir,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => continue,
         }
     }
-    if out.is_empty() { "user".into() } else { out }
+
+    // Fail closed: return a short, non-existent parent. OpenSSH will report a
+    // clear connection error rather than falling back to a shared/insecure dir.
+    PathBuf::from("/tmp").join(format!("lssh-unavailable-{}", std::process::id()))
+}
+
+fn control_dir() -> &'static Path {
+    CONTROL_DIR.get_or_init(create_private_control_dir).as_path()
+}
+
+fn control_key(server: &ServerProfile, username: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    server.id.hash(&mut hasher);
+    server.host.hash(&mut hasher);
+    server.port.hash(&mut hasher);
+    username.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub fn control_path(server: &ServerProfile, username: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join("localssh-control");
-    let _ = fs::create_dir_all(&dir);
-    let short_id = server.id.chars().take(12).collect::<String>();
-    dir.join(format!("ctl-{short_id}-{}", safe_component(username)))
+    let path = control_dir().join(format!("c-{:016x}", control_key(server, username)));
+    assert!(path.as_os_str().as_encoded_bytes().len() <= MAX_CONTROL_PATH_BYTES);
+    path
 }
 
 pub fn common_options(server: &ServerProfile, username: &str) -> Vec<String> {
@@ -89,5 +127,15 @@ mod tests {
         assert!(sftp.contains("ControlMaster=auto"));
         assert!(ssh.contains(&path));
         assert!(sftp.contains(&path));
+    }
+
+    #[test]
+    fn control_path_stays_below_macos_unix_socket_limit() {
+        let mut server = server();
+        server.id = "12345678-1234-1234-1234-12345678901234567890".into();
+        server.host = "very-long-hostname-that-must-not-leak-into-the-control-socket.example.com".into();
+        let path = control_path(&server, "an-extremely-long-username-that-must-not-expand-the-socket-path");
+        assert!(path.as_os_str().as_encoded_bytes().len() <= MAX_CONTROL_PATH_BYTES);
+        assert!(path.starts_with("/tmp"));
     }
 }

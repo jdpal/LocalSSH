@@ -2,7 +2,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { downloadRemote, isTauri, listRemote, pickDownloadDirectory, pickLocalFiles, uploadRemote } from '../api';
 import { sftpAuthAction } from '../sftpAuthModel.js';
-import { parentRemotePath, sortRemoteEntries } from '../sftpModel.js';
+import { joinRemotePath, parentRemotePath, sortRemoteEntries } from '../sftpModel.js';
 import { remoteUploadTarget, uploadErrorAction } from '../sftpUploadModel.js';
 import { resolveSftpCredentialSummary } from '../credentialModel.js';
 import Icon from './Icon';
@@ -187,7 +187,7 @@ export default function FileBrowser({ server, active, onStatus = () => {} }: Pro
 
   function toggleFileSelection(entry: RemoteEntry) {
     if (entry.kind === 'directory') {
-      setPath(entry.path);
+      setPath(joinRemotePath(path, entry.name));
       return;
     }
     if (entry.kind !== 'file') return;

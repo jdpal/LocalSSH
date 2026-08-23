@@ -22,9 +22,9 @@ test('local release script validates, builds and uploads release assets', () => 
   assert.match(script, /gh release/);
 });
 
-test('release notes describe the v0.2.0 security hardening release', () => {
+test('release notes describe the v0.2.1 control-socket hotfix', () => {
   const notes = read('RELEASE_NOTES.md');
-  assert.match(notes, /LocalSSH v0\.2\.0/);
+  assert.match(notes, /LocalSSH v0\.2\.1/);
   assert.match(notes, /macOS/);
   assert.match(notes, /OpenSSH/i);
   assert.match(notes, /security/i);
@@ -61,14 +61,14 @@ test('local release script regenerates and validates the packaged macOS icon', (
   assert.match(script, /CFBundleIconFile/);
 });
 
-test('v0.2.0 releases use lockfiles and fail on dependency security advisories', () => {
+test('v0.2.1 releases use lockfiles and fail on dependency security advisories', () => {
   const workflow = read('.github/workflows/release.yml');
   const pkg = JSON.parse(read('package.json'));
   const tauri = JSON.parse(read('src-tauri/tauri.conf.json'));
   const cargo = read('src-tauri/Cargo.toml');
-  assert.equal(pkg.version, '0.2.0');
-  assert.equal(tauri.version, '0.2.0');
-  assert.match(cargo, /^version = "0\.2\.0"/m);
+  assert.equal(pkg.version, '0.2.1');
+  assert.equal(tauri.version, '0.2.1');
+  assert.match(cargo, /^version = "0\.2\.1"/m);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm audit --audit-level=high/);
   assert.match(workflow, /cargo audit/);

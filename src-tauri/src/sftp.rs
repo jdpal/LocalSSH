@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::mpsc,
     thread,
     time::Duration,
@@ -53,8 +53,44 @@ fn quote_sftp(value: &str) -> Result<String, String> {
     Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
 }
 
+fn normalize_remote_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path.trim().split('/') {
+        match part {
+            "" | "." => {},
+            ".." => { parts.pop(); },
+            value => parts.push(value),
+        }
+    }
+    if parts.is_empty() { "/".into() } else { format!("/{}", parts.join("/")) }
+}
+
 fn remote_join(dir: &str, name: &str) -> String {
-    if dir == "/" { format!("/{name}") } else { format!("{}/{name}", dir.trim_end_matches('/')) }
+    normalize_remote_path(&format!("{}/{}", normalize_remote_path(dir).trim_end_matches('/'), name.trim_start_matches('/')))
+}
+
+fn remote_entry_path(parent: &str, raw_name: &str) -> (String, String) {
+    let parent = normalize_remote_path(parent);
+    let raw = raw_name.trim();
+
+    let path = if raw.starts_with('/') {
+        normalize_remote_path(raw)
+    } else {
+        let candidate = normalize_remote_path(&format!("/{raw}"));
+        let parent_relative = parent.trim_start_matches('/');
+        let candidate_relative = candidate.trim_start_matches('/');
+        if !parent_relative.is_empty()
+            && (candidate_relative == parent_relative
+                || candidate_relative.starts_with(&format!("{parent_relative}/")))
+        {
+            candidate
+        } else {
+            remote_join(&parent, raw)
+        }
+    };
+
+    let name = path.rsplit('/').find(|part| !part.is_empty()).unwrap_or("/").to_string();
+    (name, path)
 }
 
 fn classify_transport_error(output: &str) -> String {
@@ -203,15 +239,16 @@ fn parse_ls_line(line: &str, parent: &str) -> Option<RemoteEntry> {
     }
     while seen < bytes.len() && bytes[seen].is_ascii_whitespace() { seen += 1; }
     let _ = consumed;
-    let mut name = trimmed.get(seen..)?.trim().to_string();
-    if let Some((left, _target)) = name.split_once(" -> ") { name = left.to_string(); }
-    if name == "." || name == ".." || name.is_empty() { return None; }
+    let mut raw_name = trimmed.get(seen..)?.trim().to_string();
+    if let Some((left, _target)) = raw_name.split_once(" -> ") { raw_name = left.to_string(); }
+    if raw_name == "." || raw_name == ".." || raw_name.is_empty() { return None; }
+    let (name, path) = remote_entry_path(parent, &raw_name);
     let kind = match mode.as_bytes().first().copied() {
         Some(b'd') => "directory",
         Some(b'l') => "symlink",
         _ => "file",
     }.to_string();
-    Some(RemoteEntry { name: name.clone(), path: remote_join(parent, &name), kind, size, modified: None })
+    Some(RemoteEntry { name, path, kind, size, modified: None })
 }
 
 fn output_is_missing(output: &str) -> bool {
@@ -231,9 +268,10 @@ pub fn list_remote(
     path: &str,
     password: Option<&str>,
 ) -> Result<Vec<RemoteEntry>, String> {
-    let output = run_sftp_command(server, username, password, &format!("ls -lan {}", quote_sftp(path)?))?;
-    if output_is_missing(&output) { return Err(format!("SFTP_PATH_NOT_FOUND: {path}")); }
-    Ok(output.lines().filter_map(|line| parse_ls_line(line, path)).collect())
+    let canonical_path = normalize_remote_path(path);
+    let output = run_sftp_command(server, username, password, &format!("ls -lan {}", quote_sftp(&canonical_path)?))?;
+    if output_is_missing(&output) { return Err(format!("SFTP_PATH_NOT_FOUND: {canonical_path}")); }
+    Ok(output.lines().filter_map(|line| parse_ls_line(line, &canonical_path)).collect())
 }
 
 pub fn upload_remote(
@@ -248,7 +286,7 @@ pub fn upload_remote(
     let metadata = fs::metadata(local_path).map_err(|e| format!("Could not read local file: {e}"))?;
     if metadata.is_dir() { return Err("SFTP_DIRECTORY_UNSUPPORTED: Folder upload is not supported yet".into()); }
     let name = local_path.file_name().and_then(|v| v.to_str()).ok_or_else(|| "Could not determine local filename".to_string())?.to_string();
-    let remote_path = remote_join(remote_dir, &name);
+    let remote_path = remote_join(&normalize_remote_path(remote_dir), &name);
     if !replace && remote_exists(server, username, password, &remote_path)? {
         return Err(format!("SFTP_FILE_EXISTS:{remote_path}"));
     }
@@ -268,11 +306,12 @@ pub fn download_remote(
     local_dir: &Path,
     password: Option<&str>,
 ) -> Result<RemoteDownload, String> {
-    let name = Path::new(remote_path).file_name().and_then(|v| v.to_str())
+    let canonical_remote_path = normalize_remote_path(remote_path);
+    let name = Path::new(&canonical_remote_path).file_name().and_then(|v| v.to_str())
         .ok_or_else(|| "Could not determine remote filename".to_string())?.to_string();
     let local_path = local_dir.join(&name);
     if local_path.exists() { return Err(format!("SFTP_LOCAL_FILE_EXISTS:{}", local_path.display())); }
-    let command = format!("get {} {}", quote_sftp(remote_path)?, quote_sftp(&local_path.to_string_lossy())?);
+    let command = format!("get {} {}", quote_sftp(&canonical_remote_path)?, quote_sftp(&local_path.to_string_lossy())?);
     let output = run_sftp_command(server, username, password, &command)?;
     if output.to_lowercase().contains("not a regular file") || output.to_lowercase().contains("is a directory") {
         return Err("SFTP_DIRECTORY_DOWNLOAD_UNSUPPORTED: Folder download is not supported yet".into());
@@ -308,5 +347,22 @@ mod tests {
     #[test]
     fn sftp_quotes_paths() {
         assert_eq!(quote_sftp("a b\"c").unwrap(), "\"a b\\\"c\"");
+    }
+
+    #[test]
+    fn normalizes_remote_paths_and_prefixed_listing_names() {
+        assert_eq!(normalize_remote_path("/etc//ssh/"), "/etc/ssh");
+        assert_eq!(normalize_remote_path("/etc/../var/log"), "/var/log");
+        assert_eq!(remote_entry_path("/", "/etc"), ("etc".into(), "/etc".into()));
+        assert_eq!(remote_entry_path("/etc", "/etc/ssh"), ("ssh".into(), "/etc/ssh".into()));
+        assert_eq!(remote_entry_path("/etc", "etc/ssh"), ("ssh".into(), "/etc/ssh".into()));
+    }
+
+    #[test]
+    fn parses_prefixed_sftp_listing_without_duplicating_parent_path() {
+        let line = "drwxr-xr-x 2 0 0 4096 Aug 23 12:34 /etc/ssh";
+        let entry = parse_ls_line(line, "/etc").expect("entry");
+        assert_eq!(entry.name, "ssh");
+        assert_eq!(entry.path, "/etc/ssh");
     }
 }

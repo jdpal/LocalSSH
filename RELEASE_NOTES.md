@@ -1,28 +1,23 @@
-# LocalSSH v0.2.0
+# LocalSSH v0.2.1
 
-LocalSSH v0.2.0 is a security-hardening release for macOS.
+LocalSSH v0.2.1 is a macOS SSH/SFTP reliability hotfix on top of the v0.2.0 security-hardened release.
 
-## Security changes
+## Fixed
 
-- Replaces the Rust `ssh2` / libssh2 SFTP backend with macOS `/usr/bin/sftp` and OpenSSH.
-- Terminal and SFTP use the same OpenSSH ControlMaster path when the SSH/SFTP username matches, allowing SFTP to reuse an active terminal transport.
-- Saved passwords continue to use macOS Keychain, but are now written and read through the native Security Framework rather than passing passwords to `/usr/bin/security` process arguments.
-- Upload and download IPC no longer accepts arbitrary local filesystem paths from the webview. Native file selection and Finder drops create opaque backend grants.
-- Enables a restrictive Tauri Content Security Policy for bundled assets and IPC.
-- Adds an explicit **Clear local data** action that removes saved server profiles and their Keychain passwords from the Mac.
-- Release builds now use lockfiles and fail on high-severity npm advisories or RustSec advisories before packaging.
+- Fixes OpenSSH ControlMaster socket creation when macOS provides a long temporary-directory path.
+- Uses a short private `/tmp/lssh-...` control directory and compact hashed socket names.
+- Fixes SFTP directory navigation producing duplicated paths such as `/etc/etc`.
+- Canonicalizes root and nested SFTP paths before displaying or sending them to OpenSSH.
+- Handles OpenSSH listings that return absolute or parent-prefixed names.
+- Parent navigation remains bounded at `/` and repeated slashes / dot segments are normalized.
 
-## Existing functionality retained
+## Security
 
-- Multiple persistent SSH terminal tabs.
-- Independent Files / SFTP tabs per server.
-- Saved SSH credentials and optional separate SFTP credentials.
-- SFTP upload, Finder drag/drop and downloads.
-- Scrollable remote folders and pinned server controls.
+- Retains all v0.2.0 security hardening.
+- SFTP continues to use macOS OpenSSH rather than libssh2.
+- Saved passwords continue to use native macOS Keychain APIs.
+- Local upload/download access continues to use opaque backend file grants.
+
+## Distribution
+
 - Universal macOS DMG and application ZIP for Apple Silicon and Intel Macs.
-
-## Upgrade notes
-
-Local server metadata and Keychain accounts are compatible with v0.1.x. Existing saved servers and passwords remain available after upgrading.
-
-This build remains ad-hoc signed unless an Apple Developer signing identity is configured for the release pipeline. macOS Gatekeeper may therefore require manual approval.
