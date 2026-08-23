@@ -66,7 +66,7 @@ cargo audit --file src-tauri/Cargo.lock
 npm run tauri icon src-tauri/app-icon.png
 
 rm -rf src-tauri/target/universal-apple-darwin/release/bundle
-APPLE_SIGNING_IDENTITY="-" npm run tauri build -- --target universal-apple-darwin --bundles app,dmg --locked
+APPLE_SIGNING_IDENTITY="-" npm run tauri build -- --target universal-apple-darwin --bundles app,dmg -- --locked
 
 BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
 APP_PATH="$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -name 'LocalSSH.app' -print -quit)"

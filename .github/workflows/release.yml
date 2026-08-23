@@ -82,7 +82,7 @@ jobs:
       - name: Build universal macOS app and DMG
         run: |
           rm -rf src-tauri/target/universal-apple-darwin/release/bundle
-          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg --locked
+          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg -- --locked
 
       - name: Package release assets
         shell: bash

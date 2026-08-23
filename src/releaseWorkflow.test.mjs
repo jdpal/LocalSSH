@@ -74,3 +74,14 @@ test('v0.2.0 releases use lockfiles and fail on dependency security advisories',
   assert.match(workflow, /cargo audit/);
   assert.doesNotMatch(workflow, /npm install\s*$/m);
 });
+
+
+test('Tauri release build forwards --locked to Cargo instead of Tauri CLI', () => {
+  const workflow = read('.github/workflows/release.yml');
+  const script = read('scripts/release-local.sh');
+  const command = /tauri build -- --target universal-apple-darwin --bundles app,dmg -- --locked/;
+  assert.match(workflow, command);
+  assert.match(script, command);
+  assert.doesNotMatch(workflow, /--bundles app,dmg --locked/);
+  assert.doesNotMatch(script, /--bundles app,dmg --locked/);
+});
