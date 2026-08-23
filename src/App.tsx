@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { closeSftp, deleteServer, listServers, upsertServer } from './api';
+import { clearLocalData, closeSftp, deleteServer, listServers, upsertServer } from './api';
 import { groupAndFilterServers } from './serverModel.js';
 import { addSessionTab, removeSessionTab, serverConnectionState, terminalStackState } from './terminalModel.js';
 import { ensureSftpTab, removeSftpTab, updateSftpTabStatus } from './sftpSessionModel.js';
@@ -169,6 +169,21 @@ export default function App() {
     return serverConnectionState(tabs, serverId);
   }
 
+  async function clearEverything() {
+    const confirmed = window.confirm('Delete all saved LocalSSH servers and Keychain passwords from this Mac? Active sessions will close.');
+    if (!confirmed) return;
+    try {
+      await clearLocalData();
+      setServers([]);
+      setSelectedId(null);
+      setTabs([]);
+      setActiveTabId(null);
+      setSftpTabs([]);
+      setActiveSftpTabId(null);
+      setError('');
+    } catch (err) { setError(String(err)); }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -187,7 +202,10 @@ export default function App() {
           ))}
           {!groups.length && <div className="empty-note">No matching servers.</div>}
         </div>
-        <button className="add-server button-with-icon" onClick={() => openForm({ ...emptyForm })}><Icon name="add"/> Add server</button>
+        <div className="sidebar-actions">
+          <button className="add-server button-with-icon" onClick={() => openForm({ ...emptyForm })}><Icon name="add"/> Add server</button>
+          <button className="clear-local-data" onClick={() => void clearEverything()}>Clear local data</button>
+        </div>
       </aside>
 
       <section className="workspace">

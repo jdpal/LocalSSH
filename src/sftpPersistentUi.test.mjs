@@ -27,10 +27,10 @@ test('FileBrowser reports connection state to its owning SFTP tab', () => {
   assert.match(browser, /onStatusRef\.current\('connected'\)/);
 });
 
-test('native backend has a persistent SFTP manager keyed by server', () => {
+test('native backend uses OpenSSH SFTP while preserving per-server tab close API', () => {
   assert.match(rustSftp, /pub struct SftpManager/);
-  assert.match(rustSftp, /HashMap<String, ManagedSession>/);
-  assert.match(rustSftp, /pub fn close\(&self, server_id: &str\)/);
+  assert.match(rustSftp, /\/usr\/bin\/sftp/);
+  assert.match(rustSftp, /pub fn close\(&self, _server_id: &str\)/);
   assert.match(rustLib, /sftp: SftpManager/);
   assert.match(rustLib, /fn sftp_close/);
 });

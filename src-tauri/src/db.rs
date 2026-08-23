@@ -162,4 +162,10 @@ impl Database {
         .map_err(|e| format!("Could not update recent connection: {e}"))?;
         Ok(())
     }
+    pub fn clear_servers(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "Database lock is unavailable".to_string())?;
+        conn.execute("DELETE FROM servers", []).map_err(|e| format!("Could not clear servers: {e}"))?;
+        Ok(())
+    }
+
 }

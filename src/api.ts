@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { RemoteEntry, ServerInput, ServerProfile } from './types';
+import type { LocalDirectoryGrant, LocalFileGrant, RemoteEntry, ServerInput, ServerProfile } from './types';
 
 const demoServers: ServerProfile[] = [
   { id: 'demo-web-01', name: 'Web-01', host: '10.20.0.15', port: 22, username: 'jd', groupName: 'Production', favourite: true, useSshCredentialsForSftp: true, hasSshPassword: false, hasSftpPassword: false },
@@ -77,27 +77,30 @@ export async function listRemote(serverId: string, path: string, password: strin
   return invoke<RemoteEntry[]>('sftp_list', { serverId, path, password });
 }
 
-export async function pickLocalFiles(): Promise<string[]> {
+export async function pickLocalFiles(): Promise<LocalFileGrant[]> {
   if (!isTauri()) return [];
-  return invoke<string[]>('pick_local_files');
+  return invoke<LocalFileGrant[]>('pick_local_files');
 }
 
-export async function uploadRemote(serverId: string, localPath: string, remoteDir: string, password: string | null = null, replace = false): Promise<{ name: string; path: string; size: number }> {
-  if (!isTauri()) {
-    const name = localPath.replace(/\\/g, '/').split('/').pop() || 'file';
-    return { name, path: `${remoteDir === '/' ? '' : remoteDir}/${name}`, size: 0 };
-  }
-  return invoke('sftp_upload', { serverId, localPath, remoteDir, password, replace });
+export async function uploadRemote(serverId: string, localFileId: string, remoteDir: string, password: string | null = null, replace = false): Promise<{ name: string; path: string; size: number }> {
+  if (!isTauri()) return { name: localFileId, path: `${remoteDir === '/' ? '' : remoteDir}/${localFileId}`, size: 0 };
+  return invoke('sftp_upload', { serverId, localFileId, remoteDir, password, replace });
 }
-export async function pickDownloadDirectory(): Promise<string | null> {
+
+export async function pickDownloadDirectory(): Promise<LocalDirectoryGrant | null> {
   if (!isTauri()) return null;
-  return invoke<string | null>('pick_download_directory');
+  return invoke<LocalDirectoryGrant | null>('pick_download_directory');
 }
 
-export async function downloadRemote(serverId: string, remotePath: string, localDir: string, password: string | null = null): Promise<{ name: string; path: string; size: number }> {
+export async function downloadRemote(serverId: string, remotePath: string, localDirectoryId: string, password: string | null = null): Promise<{ name: string; path: string; size: number }> {
   if (!isTauri()) {
     const name = remotePath.replace(/\\/g, '/').split('/').pop() || 'file';
-    return { name, path: `${localDir.replace(/\/+$/, '')}/${name}`, size: 0 };
+    return { name, path: `${localDirectoryId}/${name}`, size: 0 };
   }
-  return invoke('sftp_download', { serverId, remotePath, localDir, password });
+  return invoke('sftp_download', { serverId, remotePath, localDirectoryId, password });
+}
+
+export async function clearLocalData(): Promise<void> {
+  if (!isTauri()) { browserServers = []; return; }
+  await invoke('clear_local_data');
 }

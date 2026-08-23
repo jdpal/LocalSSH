@@ -1,17 +1,16 @@
 use std::{
-    collections::HashMap,
-    fs::{self, File},
-    io,
-    net::{TcpStream, ToSocketAddrs},
+    fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::mpsc,
+    thread,
     time::Duration,
 };
 
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
-use ssh2::{CheckResult, KnownHostFileKind, Session, Sftp};
 
-use crate::server::ServerProfile;
+use crate::{openssh, server::ServerProfile};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,374 +38,275 @@ pub struct RemoteDownload {
     pub size: u64,
 }
 
-struct ManagedSession {
-    connection_key: String,
-    session: Session,
-    sftp: Sftp,
-}
-
 #[derive(Default)]
-pub struct SftpManager {
-    sessions: Mutex<HashMap<String, ManagedSession>>,
-}
+pub struct SftpManager;
 
 impl SftpManager {
-    fn connection_key(server: &ServerProfile, username: &str) -> String {
-        format!("{}:{}@{}:{}", server.id, username, server.host, server.port)
-    }
-
-    fn sessions(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, ManagedSession>>, String> {
-        self.sessions
-            .lock()
-            .map_err(|_| "SFTP session manager lock was poisoned".to_string())
-    }
-
-    fn ensure_session<'a>(
-        sessions: &'a mut HashMap<String, ManagedSession>,
-        server: &ServerProfile,
-        username: &str,
-        password: Option<&str>,
-    ) -> Result<&'a mut ManagedSession, String> {
-        let key = Self::connection_key(server, username);
-        let replace = sessions
-            .get(&server.id)
-            .map(|managed| managed.connection_key != key)
-            .unwrap_or(true);
-        if replace {
-            sessions.remove(&server.id);
-            let session = connected_session(server, username, password)?;
-            let sftp = session
-                .sftp()
-                .map_err(|e| format!("Could not start SFTP subsystem: {e}"))?;
-            sessions.insert(
-                server.id.clone(),
-                ManagedSession {
-                    connection_key: key,
-                    session,
-                    sftp,
-                },
-            );
-        }
-        sessions
-            .get_mut(&server.id)
-            .ok_or_else(|| "Could not retain SFTP session".to_string())
-    }
-
-    fn with_session<T, F>(
-        &self,
-        server: &ServerProfile,
-        username: &str,
-        password: Option<&str>,
-        operation: F,
-    ) -> Result<T, String>
-    where
-        F: Fn(&Sftp) -> Result<T, String>,
-    {
-        let mut sessions = self.sessions()?;
-        let first_result = {
-            let managed = Self::ensure_session(&mut sessions, server, username, password)?;
-            operation(&managed.sftp)
-        };
-
-        match first_result {
-            Ok(value) => Ok(value),
-            Err(first_error) => {
-                let stale = sessions
-                    .get_mut(&server.id)
-                    .map(|managed| {
-                        managed.session.keepalive_send().is_err()
-                            || managed.sftp.realpath(Path::new(".")).is_err()
-                    })
-                    .unwrap_or(true);
-                if !stale {
-                    return Err(first_error);
-                }
-
-                sessions.remove(&server.id);
-                let managed = Self::ensure_session(&mut sessions, server, username, password)?;
-                operation(&managed.sftp)
-            }
-        }
-    }
-
-    pub fn close(&self, server_id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions()?;
-        if let Some(managed) = sessions.remove(server_id) {
-            let _ = managed.session.disconnect(None, "LocalSSH SFTP session closed", None);
-        }
-        Ok(())
-    }
-
-    pub fn close_all(&self) {
-        if let Ok(mut sessions) = self.sessions.lock() {
-            for (_, managed) in sessions.drain() {
-                let _ = managed.session.disconnect(None, "LocalSSH closed", None);
-            }
-        }
-    }
+    pub fn close(&self, _server_id: &str) -> Result<(), String> { Ok(()) }
+    pub fn close_all(&self) {}
 }
 
-impl Drop for SftpManager {
-    fn drop(&mut self) {
-        self.close_all();
+fn quote_sftp(value: &str) -> Result<String, String> {
+    if value.chars().any(char::is_control) {
+        return Err("SFTP_UNSAFE_PATH: File paths containing control characters are not supported".into());
     }
+    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
 }
 
-fn expand_tilde(value: &str) -> PathBuf {
-    if value == "~" {
-        return std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(value));
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
-    }
-    PathBuf::from(value)
+fn remote_join(dir: &str, name: &str) -> String {
+    if dir == "/" { format!("/{name}") } else { format!("{}/{name}", dir.trim_end_matches('/')) }
 }
 
-fn connect_tcp(server: &ServerProfile) -> Result<TcpStream, String> {
-    let addresses = format!("{}:{}", server.host, server.port)
-        .to_socket_addrs()
-        .map_err(|e| format!("Could not resolve {}: {e}", server.host))?;
-    let mut last_error = None;
-    for address in addresses {
-        match TcpStream::connect_timeout(&address, Duration::from_secs(10)) {
-            Ok(stream) => {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(20)));
-                return Ok(stream);
-            }
-            Err(error) => last_error = Some(error),
-        }
+fn classify_transport_error(output: &str) -> String {
+    let lower = output.to_lowercase();
+    if lower.contains("host key verification failed") || lower.contains("no hostkey") {
+        return "SFTP_HOST_KEY_FAILED: Host key verification failed. Connect in Terminal first and verify the host key.".into();
     }
-    Err(format!(
-        "Could not connect to {}:{}: {}",
-        server.host,
-        server.port,
-        last_error
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "no address found".into())
-    ))
+    if lower.contains("connection refused") || lower.contains("connection timed out") || lower.contains("could not resolve hostname") || lower.contains("connection closed") {
+        return format!("SFTP_CONNECTION_FAILED: {}", output.trim());
+    }
+    format!("SFTP_COMMAND_FAILED: {}", output.trim())
 }
 
-fn verify_known_host(session: &Session, server: &ServerProfile) -> Result<(), String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "HOME is not available; cannot locate ~/.ssh/known_hosts".to_string())?;
-    let known_hosts_path = Path::new(&home).join(".ssh/known_hosts");
-    if !known_hosts_path.exists() {
-        return Err("No ~/.ssh/known_hosts file exists. Connect in the Terminal tab first so OpenSSH can verify and save the server host key.".into());
-    }
-    let mut known_hosts = session
-        .known_hosts()
-        .map_err(|e| format!("Could not initialise known_hosts verification: {e}"))?;
-    known_hosts
-        .read_file(&known_hosts_path, KnownHostFileKind::OpenSSH)
-        .map_err(|e| format!("Could not read ~/.ssh/known_hosts: {e}"))?;
-    let (host_key, _) = session
-        .host_key()
-        .ok_or_else(|| "SSH server did not provide a host key".to_string())?;
-    match known_hosts.check_port(&server.host, server.port, host_key) {
-        CheckResult::Match => Ok(()),
-        CheckResult::NotFound => Err("Server host key is not in ~/.ssh/known_hosts. Connect in the Terminal tab first and verify the fingerprint.".into()),
-        CheckResult::Mismatch => Err("Server host key does not match ~/.ssh/known_hosts. Refusing the SFTP connection.".into()),
-        CheckResult::Failure => Err("Could not verify the server host key against ~/.ssh/known_hosts".into()),
-    }
-}
-
-fn authenticate(
-    session: &Session,
+fn run_sftp_command(
     server: &ServerProfile,
     username: &str,
     password: Option<&str>,
-) -> Result<(), String> {
-    if session.userauth_agent(username).is_ok() && session.authenticated() {
-        return Ok(());
-    }
-    if let Some(identity) = server
-        .identity_file
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        let key = expand_tilde(identity.trim());
-        if session
-            .userauth_pubkey_file(username, None, &key, None)
-            .is_ok()
-            && session.authenticated()
-        {
-            return Ok(());
+    sftp_command: &str,
+) -> Result<String, String> {
+    let pty = native_pty_system();
+    let pair = pty.openpty(PtySize { rows: 28, cols: 160, pixel_width: 0, pixel_height: 0 })
+        .map_err(|error| format!("Could not create SFTP terminal: {error}"))?;
+
+    let mut command = CommandBuilder::new("/usr/bin/sftp");
+    for arg in openssh::sftp_args(server, username) { command.arg(arg); }
+    let mut child = pair.slave.spawn_command(command)
+        .map_err(|error| format!("Could not start /usr/bin/sftp: {error}"))?;
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader()
+        .map_err(|error| format!("Could not read SFTP process: {error}"))?;
+    let mut writer = pair.master.take_writer()
+        .map_err(|error| format!("Could not write SFTP process: {error}"))?;
+
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    if tx.send(String::from_utf8_lossy(&buffer[..count]).to_string()).is_err() { break; }
+                }
+            }
+        }
+    });
+
+    let mut transcript = String::new();
+    let mut command_output = String::new();
+    let mut password_sent = false;
+    let mut command_sent = false;
+
+    for _ in 0..240 {
+        match rx.recv_timeout(Duration::from_millis(250)) {
+            Ok(chunk) => {
+                transcript.push_str(&chunk.replace('\r', ""));
+                let lower = transcript.to_lowercase();
+
+                let password_prompts = lower.matches("password:").count();
+                if (!password_sent && password_prompts >= 1) || (password_sent && password_prompts >= 2) {
+                    if password_sent {
+                        let _ = child.kill();
+                        return Err("SFTP_AUTH_FAILED: Password was rejected".into());
+                    }
+                    let Some(value) = password.filter(|value| !value.is_empty()) else {
+                        let _ = child.kill();
+                        return Err("SFTP_AUTH_REQUIRED: No usable key, agent identity, or saved password was available".into());
+                    };
+                    writer.write_all(value.as_bytes()).map_err(|e| format!("Could not answer SFTP password prompt: {e}"))?;
+                    writer.write_all(b"\n").map_err(|e| format!("Could not answer SFTP password prompt: {e}"))?;
+                    writer.flush().map_err(|e| format!("Could not answer SFTP password prompt: {e}"))?;
+                    password_sent = true;
+                    transcript.clear();
+                    continue;
+                }
+
+                if lower.contains("permission denied") || lower.contains("authentication failed") {
+                    let _ = child.kill();
+                    return Err("SFTP_AUTH_FAILED: Authentication failed".into());
+                }
+
+                if !command_sent {
+                    if transcript.contains("sftp> ") || transcript.ends_with("sftp>") {
+                        writer.write_all(sftp_command.as_bytes()).map_err(|e| format!("Could not send SFTP command: {e}"))?;
+                        writer.write_all(b"\n").map_err(|e| format!("Could not send SFTP command: {e}"))?;
+                        writer.flush().map_err(|e| format!("Could not send SFTP command: {e}"))?;
+                        command_sent = true;
+                        transcript.clear();
+                    }
+                    continue;
+                }
+
+                if let Some(prompt) = transcript.find("sftp> ").or_else(|| transcript.rfind("\nsftp>")) {
+                    command_output.push_str(&transcript[..prompt]);
+                    let _ = writer.write_all(b"quit\n");
+                    let _ = writer.flush();
+                    let _ = child.wait();
+                    return Ok(clean_command_output(&command_output, sftp_command));
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = child.wait();
+                if command_sent && !transcript.trim().is_empty() {
+                    return Err(classify_transport_error(&transcript));
+                }
+                return Err(classify_transport_error(&transcript));
+            }
         }
     }
-    if let Some(password) = password.filter(|value| !value.is_empty()) {
-        return session
-            .userauth_password(username, password)
-            .map_err(|_| "SFTP_AUTH_FAILED: password rejected".to_string())
-            .and_then(|_| {
-                if session.authenticated() {
-                    Ok(())
-                } else {
-                    Err("SFTP_AUTH_FAILED: password rejected".into())
-                }
-            });
-    }
-    Err("SFTP_AUTH_REQUIRED: key, ssh-agent, and saved password authentication were unavailable".into())
+
+    let _ = child.kill();
+    Err("SFTP_TIMEOUT: SFTP command did not complete within 60 seconds".into())
 }
 
-fn connected_session(
-    server: &ServerProfile,
-    username: &str,
-    password: Option<&str>,
-) -> Result<Session, String> {
-    let tcp = connect_tcp(server)?;
-    let mut session = Session::new()
-        .map_err(|e| format!("Could not initialise SSH session: {e}"))?;
-    session.set_tcp_stream(tcp);
-    session
-        .handshake()
-        .map_err(|e| format!("SSH handshake failed: {e}"))?;
-    verify_known_host(&session, server)?;
-    authenticate(&session, server, username, password)?;
-    session.set_keepalive(true, 30);
-    Ok(session)
+fn clean_command_output(output: &str, command: &str) -> String {
+    output
+        .lines()
+        .filter(|line| line.trim() != command.trim())
+        .filter(|line| !line.trim_start().starts_with("sftp>"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_ls_line(line: &str, parent: &str) -> Option<RemoteEntry> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with("total ") || trimmed.starts_with("Can't ls") || trimmed.starts_with("Couldn't") { return None; }
+    let mut iter = trimmed.split_whitespace();
+    let mode = iter.next()?;
+    if mode.len() < 10 { return None; }
+    let _links = iter.next()?;
+    let _uid = iter.next()?;
+    let _gid = iter.next()?;
+    let size = iter.next()?.parse::<u64>().ok();
+    let _month = iter.next()?;
+    let _day = iter.next()?;
+    let _time_or_year = iter.next()?;
+    let consumed = trimmed.split_whitespace().take(8).map(str::len).sum::<usize>();
+    let mut seen = 0usize;
+    let mut fields = 0usize;
+    let bytes = trimmed.as_bytes();
+    while seen < bytes.len() && fields < 8 {
+        while seen < bytes.len() && bytes[seen].is_ascii_whitespace() { seen += 1; }
+        while seen < bytes.len() && !bytes[seen].is_ascii_whitespace() { seen += 1; }
+        fields += 1;
+    }
+    while seen < bytes.len() && bytes[seen].is_ascii_whitespace() { seen += 1; }
+    let _ = consumed;
+    let mut name = trimmed.get(seen..)?.trim().to_string();
+    if let Some((left, _target)) = name.split_once(" -> ") { name = left.to_string(); }
+    if name == "." || name == ".." || name.is_empty() { return None; }
+    let kind = match mode.as_bytes().first().copied() {
+        Some(b'd') => "directory",
+        Some(b'l') => "symlink",
+        _ => "file",
+    }.to_string();
+    Some(RemoteEntry { name: name.clone(), path: remote_join(parent, &name), kind, size, modified: None })
+}
+
+fn output_is_missing(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("no such file") || lower.contains("not found") || lower.contains("can't ls") || lower.contains("couldn't stat")
+}
+
+fn remote_exists(server: &ServerProfile, username: &str, password: Option<&str>, remote_path: &str) -> Result<bool, String> {
+    let output = run_sftp_command(server, username, password, &format!("ls -ld {}", quote_sftp(remote_path)?))?;
+    Ok(!output_is_missing(&output))
 }
 
 pub fn list_remote(
-    manager: &SftpManager,
+    _manager: &SftpManager,
     server: &ServerProfile,
     username: &str,
     path: &str,
     password: Option<&str>,
 ) -> Result<Vec<RemoteEntry>, String> {
-    manager.with_session(server, username, password, |sftp| {
-        let remote_path = if path.trim().is_empty() { "/" } else { path.trim() };
-        let mut entries = sftp
-            .readdir(Path::new(remote_path))
-            .map_err(|e| format!("Could not list {remote_path}: {e}"))?
-            .into_iter()
-            .map(|(path, stat)| {
-                let file_type = stat.file_type();
-                let kind = if file_type.is_dir() {
-                    "directory"
-                } else if file_type.is_symlink() {
-                    "symlink"
-                } else {
-                    "file"
-                };
-                RemoteEntry {
-                    name: path
-                        .file_name()
-                        .map(|value| value.to_string_lossy().to_string())
-                        .unwrap_or_else(|| path.to_string_lossy().to_string()),
-                    path: path.to_string_lossy().to_string(),
-                    kind: kind.to_string(),
-                    size: stat.size,
-                    modified: stat.mtime,
-                }
-            })
-            .collect::<Vec<_>>();
-        entries.sort_by(|a, b| {
-            let a_dir = a.kind == "directory";
-            let b_dir = b.kind == "directory";
-            b_dir
-                .cmp(&a_dir)
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-        });
-        Ok(entries)
-    })
+    let output = run_sftp_command(server, username, password, &format!("ls -lan {}", quote_sftp(path)?))?;
+    if output_is_missing(&output) { return Err(format!("SFTP_PATH_NOT_FOUND: {path}")); }
+    Ok(output.lines().filter_map(|line| parse_ls_line(line, path)).collect())
 }
 
 pub fn upload_remote(
-    manager: &SftpManager,
+    _manager: &SftpManager,
     server: &ServerProfile,
     username: &str,
-    local_path: &str,
+    local_path: &Path,
     remote_dir: &str,
     password: Option<&str>,
     replace: bool,
 ) -> Result<RemoteUpload, String> {
-    let local = Path::new(local_path);
-    let metadata = fs::metadata(local)
-        .map_err(|e| format!("Could not read local file {local_path}: {e}"))?;
-    if metadata.is_dir() {
-        return Err(format!("SFTP_DIRECTORY_UNSUPPORTED:{local_path}"));
+    let metadata = fs::metadata(local_path).map_err(|e| format!("Could not read local file: {e}"))?;
+    if metadata.is_dir() { return Err("SFTP_DIRECTORY_UNSUPPORTED: Folder upload is not supported yet".into()); }
+    let name = local_path.file_name().and_then(|v| v.to_str()).ok_or_else(|| "Could not determine local filename".to_string())?.to_string();
+    let remote_path = remote_join(remote_dir, &name);
+    if !replace && remote_exists(server, username, password, &remote_path)? {
+        return Err(format!("SFTP_FILE_EXISTS:{remote_path}"));
     }
-    let file_name = local
-        .file_name()
-        .ok_or_else(|| format!("Could not determine local filename for {local_path}"))?
-        .to_os_string();
-    let remote_base = if remote_dir.trim().is_empty() { "/" } else { remote_dir.trim() };
-    let remote_path = Path::new(remote_base).join(&file_name);
-
-    manager.with_session(server, username, password, |sftp| {
-        if let Ok(stat) = sftp.stat(&remote_path) {
-            if stat.file_type().is_dir() {
-                return Err(format!("Remote target is a directory: {}", remote_path.to_string_lossy()));
-            }
-            if !replace {
-                return Err(format!("SFTP_FILE_EXISTS:{}", remote_path.to_string_lossy()));
-            }
-        }
-
-        let mut source = File::open(local)
-            .map_err(|e| format!("Could not open local file {local_path}: {e}"))?;
-        let mut target = sftp.create(&remote_path).map_err(|e| {
-            format!("Could not create remote file {}: {e}", remote_path.to_string_lossy())
-        })?;
-        io::copy(&mut source, &mut target)
-            .map_err(|e| format!("Could not upload {}: {e}", remote_path.to_string_lossy()))?;
-
-        Ok(RemoteUpload {
-            name: file_name.to_string_lossy().to_string(),
-            path: remote_path.to_string_lossy().to_string(),
-            size: metadata.len(),
-        })
-    })
+    let command = format!("put {} {}", quote_sftp(&local_path.to_string_lossy())?, quote_sftp(&remote_path)?);
+    let output = run_sftp_command(server, username, password, &command)?;
+    if output.to_lowercase().contains("failure") || output.to_lowercase().contains("permission denied") {
+        return Err(format!("SFTP_UPLOAD_FAILED: {}", output.trim()));
+    }
+    Ok(RemoteUpload { name, path: remote_path, size: metadata.len() })
 }
 
 pub fn download_remote(
-    manager: &SftpManager,
+    _manager: &SftpManager,
     server: &ServerProfile,
     username: &str,
     remote_path: &str,
-    local_dir: &str,
+    local_dir: &Path,
     password: Option<&str>,
 ) -> Result<RemoteDownload, String> {
-    let remote = Path::new(remote_path);
-    let file_name = remote
-        .file_name()
-        .ok_or_else(|| format!("Could not determine remote filename for {remote_path}"))?
-        .to_os_string();
-
-    let destination_dir = Path::new(local_dir);
-    if !destination_dir.is_dir() {
-        return Err(format!("Download destination is not a directory: {local_dir}"));
+    let name = Path::new(remote_path).file_name().and_then(|v| v.to_str())
+        .ok_or_else(|| "Could not determine remote filename".to_string())?.to_string();
+    let local_path = local_dir.join(&name);
+    if local_path.exists() { return Err(format!("SFTP_LOCAL_FILE_EXISTS:{}", local_path.display())); }
+    let command = format!("get {} {}", quote_sftp(remote_path)?, quote_sftp(&local_path.to_string_lossy())?);
+    let output = run_sftp_command(server, username, password, &command)?;
+    if output.to_lowercase().contains("not a regular file") || output.to_lowercase().contains("is a directory") {
+        return Err("SFTP_DIRECTORY_DOWNLOAD_UNSUPPORTED: Folder download is not supported yet".into());
     }
-    let local_path = destination_dir.join(&file_name);
-    if local_path.exists() {
-        return Err(format!("SFTP_LOCAL_FILE_EXISTS:{}", local_path.to_string_lossy()));
+    if output.to_lowercase().contains("failure") || output.to_lowercase().contains("permission denied") {
+        return Err(format!("SFTP_DOWNLOAD_FAILED: {}", output.trim()));
+    }
+    let size = fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+    Ok(RemoteDownload { name, path: local_path.display().to_string(), size })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_long_listing_with_spaces() {
+        let line = "-rw-r--r-- 1 501 20 42 Aug 23 12:34 hello world.txt";
+        let entry = parse_ls_line(line, "/tmp").expect("entry");
+        assert_eq!(entry.name, "hello world.txt");
+        assert_eq!(entry.path, "/tmp/hello world.txt");
+        assert_eq!(entry.kind, "file");
+        assert_eq!(entry.size, Some(42));
     }
 
-    manager.with_session(server, username, password, |sftp| {
-        let stat = sftp
-            .stat(remote)
-            .map_err(|e| format!("Could not stat remote file {remote_path}: {e}"))?;
-        if stat.file_type().is_dir() {
-            return Err(format!("SFTP_DIRECTORY_DOWNLOAD_UNSUPPORTED:{remote_path}"));
-        }
+    #[test]
+    fn rejects_control_characters_in_sftp_paths() {
+        assert!(quote_sftp("/safe/path").is_ok());
+        assert!(quote_sftp("/tmp/evil\n!rm -rf /").is_err());
+        assert!(quote_sftp("/tmp/evil\rquit").is_err());
+    }
 
-        let mut source = sftp
-            .open(remote)
-            .map_err(|e| format!("Could not open remote file {remote_path}: {e}"))?;
-        let mut target = File::create(&local_path)
-            .map_err(|e| format!("Could not create local file {}: {e}", local_path.to_string_lossy()))?;
-        let copied = io::copy(&mut source, &mut target)
-            .map_err(|e| format!("Could not download {remote_path}: {e}"))?;
-
-        Ok(RemoteDownload {
-            name: file_name.to_string_lossy().to_string(),
-            path: local_path.to_string_lossy().to_string(),
-            size: stat.size.unwrap_or(copied),
-        })
-    })
+    #[test]
+    fn sftp_quotes_paths() {
+        assert_eq!(quote_sftp("a b\"c").unwrap(), "\"a b\\\"c\"");
+    }
 }

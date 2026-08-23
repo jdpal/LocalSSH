@@ -1,6 +1,5 @@
-use std::process::Command;
-
 const SERVICE: &str = "com.localssh.credentials";
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
 #[derive(Debug, Clone, Copy)]
 pub enum CredentialKind {
@@ -20,13 +19,15 @@ impl CredentialStore {
     pub fn get(&self, server_id: &str, kind: CredentialKind) -> Result<Option<String>, String> {
         #[cfg(target_os = "macos")]
         {
+            use security_framework::passwords::{generic_password, PasswordOptions};
             let account = Self::account(server_id, kind);
-            let output = Command::new("/usr/bin/security")
-                .args(["find-generic-password", "-a", &account, "-s", SERVICE, "-w"])
-                .output()
-                .map_err(|e| format!("Could not read macOS Keychain: {e}"))?;
-            if !output.status.success() { return Ok(None); }
-            return Ok(Some(String::from_utf8_lossy(&output.stdout).trim_end_matches(|c| c == '\r' || c == '\n').to_string()));
+            return match generic_password(PasswordOptions::new_generic_password(SERVICE, &account)) {
+                Ok(bytes) => String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| "Saved Keychain password is not valid UTF-8".to_string()),
+                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+                Err(error) => Err(format!("Could not read macOS Keychain: {error}")),
+            };
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -39,13 +40,10 @@ impl CredentialStore {
         if password.is_empty() { return self.delete(server_id, kind); }
         #[cfg(target_os = "macos")]
         {
+            use security_framework::passwords::set_generic_password;
             let account = Self::account(server_id, kind);
-            let output = Command::new("/usr/bin/security")
-                .args(["add-generic-password", "-U", "-a", &account, "-s", SERVICE, "-l", "LocalSSH saved server password", "-w", password])
-                .output()
-                .map_err(|e| format!("Could not save password to macOS Keychain: {e}"))?;
-            if output.status.success() { return Ok(()); }
-            return Err(format!("Could not save password to macOS Keychain: {}", String::from_utf8_lossy(&output.stderr).trim()));
+            return set_generic_password(SERVICE, &account, password.as_bytes())
+                .map_err(|error| format!("Could not save password to macOS Keychain: {error}"));
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -57,12 +55,13 @@ impl CredentialStore {
     pub fn delete(&self, server_id: &str, kind: CredentialKind) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         {
+            use security_framework::passwords::delete_generic_password;
             let account = Self::account(server_id, kind);
-            let _ = Command::new("/usr/bin/security")
-                .args(["delete-generic-password", "-a", &account, "-s", SERVICE])
-                .output()
-                .map_err(|e| format!("Could not update macOS Keychain: {e}"))?;
-            Ok(())
+            return match delete_generic_password(SERVICE, &account) {
+                Ok(()) => Ok(()),
+                Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+                Err(error) => Err(format!("Could not update macOS Keychain: {error}")),
+            };
         }
         #[cfg(not(target_os = "macos"))]
         {

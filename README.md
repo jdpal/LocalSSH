@@ -1,120 +1,72 @@
 # LocalSSH
 
-LocalSSH is a macOS-first desktop SSH manager with a Termius-style interface. It stores multiple server profiles locally, opens real `/usr/bin/ssh` sessions inside xterm.js, and provides read-only SFTP directory browsing.
+LocalSSH is a macOS-first desktop SSH and SFTP manager with a Termius-style interface. It stores server profiles locally, opens real `/usr/bin/ssh` sessions inside xterm.js, and uses the system OpenSSH `/usr/bin/sftp` client for file transfers.
 
-## Current v1 features
+## Features
 
-- Server groups, favourites, search, add/edit/delete profiles
-- SQLite persistence inside the app data directory
-- Multiple concurrent terminal tabs
-- Native macOS OpenSSH attached to a PTY
-- Normal OpenSSH host-key, password, key-passphrase, `known_hosts`, and `ssh-agent` behaviour in Terminal
-- Read-only SFTP browser with host-key verification
-- SFTP authentication through `ssh-agent`, with fallback to an unencrypted identity file
-- System light/dark appearance
-- No cloud account and no localhost network listener
-- No password or private-key contents stored by LocalSSH
+- Saved servers, groups, favourites and search
+- Multiple persistent SSH terminal tabs
+- Multiple independent SFTP tabs
+- Upload from the native macOS file picker or Finder drag-and-drop
+- Download one or more remote files to a native macOS-selected folder
+- Separate or shared SSH/SFTP usernames and passwords
+- Passwords stored in macOS Keychain, not SQLite
+- Server metadata stored in a local SQLite database
+- OpenSSH host-key verification through `~/.ssh/known_hosts`
+- OpenSSH connection multiplexing when SSH and SFTP use the same server identity
+- Light/dark macOS UI and native app icon
+- Clear Local Data control for saved profiles and credentials
 
 ## Security model
 
-Terminal connections execute `/usr/bin/ssh` directly. Profile values are passed as process arguments rather than through a shell.
+LocalSSH v0.2.0 uses Apple's installed OpenSSH clients for both Terminal and SFTP transport. It does not embed libssh2.
 
-The SFTP browser refuses unknown or mismatched host keys. Connect to a new server in the Terminal tab first, verify its fingerprint through OpenSSH, and allow OpenSSH to add it to `~/.ssh/known_hosts`.
+Passwords are stored as generic-password entries in macOS Keychain under the LocalSSH service. Password values are accessed through the native Security Framework and are not passed on a `/usr/bin/security` command line.
 
-SFTP does not store passwords or passphrases. Load encrypted keys into the macOS SSH agent before using Files / SFTP.
+The webview never receives arbitrary local filesystem authority for transfers. Native file selection and Finder drops create opaque, in-memory grants. Upload and download commands accept those grant IDs instead of user-supplied local paths.
 
-## Build on macOS
+SFTP remote paths containing control characters are rejected before they can reach the interactive `sftp` command parser. Unknown or changed SSH host keys are rejected by OpenSSH according to `~/.ssh/known_hosts`.
 
-Install Apple's command-line tools:
+The Tauri webview uses a restrictive Content Security Policy. Release builds run frontend and Rust dependency audits and stop on high-severity advisories.
 
-```bash
-xcode-select --install
+## Local data
+
+Server metadata is stored under the macOS application-data directory, normally:
+
+```text
+~/Library/Application Support/com.localssh.app/localssh.sqlite3
 ```
 
-Install a current Rust toolchain using rustup and install Node.js 20 or newer. Then from this folder:
+Passwords are stored separately in macOS Keychain. Installing a newer LocalSSH build with the same bundle identifier intentionally reuses this local data.
+
+Use **Clear local data** in the app to delete saved server profiles and their known LocalSSH Keychain credentials.
+
+## Development
+
+Requirements:
+
+- macOS
+- Xcode Command Line Tools
+- Node.js/npm
+- Rust/Cargo
 
 ```bash
 npm install
 npm test
+npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
 npm run tauri dev
 ```
 
-For a release build:
+## Release security checks
+
+A release uses lockfiles and verifies dependencies before packaging:
 
 ```bash
-npm run tauri build
+npm ci
+npm audit --audit-level=high
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+cargo audit --file src-tauri/Cargo.lock
 ```
 
-Tauri writes the macOS application and DMG under:
-
-```text
-src-tauri/target/release/bundle/macos/LocalSSH.app
-src-tauri/target/release/bundle/dmg/
-```
-
-Open the DMG and drag **LocalSSH.app** into **Applications**, or copy the `.app` directly:
-
-```bash
-cp -R src-tauri/target/release/bundle/macos/LocalSSH.app /Applications/
-```
-
-The build produced from this source is unsigned unless you configure an Apple Developer signing identity and notarisation.
-
-## Usage
-
-1. Launch LocalSSH.
-2. Select **Add server**.
-3. Enter a name, host/IP, username, port, group, and optional identity file.
-4. Select the server and click **Connect**.
-5. Use the Terminal tab for the normal SSH session.
-6. Use **Files / SFTP** after the host key is present in `~/.ssh/known_hosts` and your authentication key is available to `ssh-agent`.
-
-## Data stored locally
-
-Server profiles contain only:
-
-- display name
-- hostname/IP
-- SSH port
-- username
-- group
-- favourite state
-- optional identity-file path
-- last connected timestamp
-
-Passwords, passphrases, and private-key contents are not stored.
-
-## Project structure
-
-```text
-src/                      React/xterm.js desktop UI
-src/components/           Terminal and SFTP components
-src-tauri/src/db.rs        SQLite persistence
-src-tauri/src/server.rs    Profile model and validation
-src-tauri/src/terminal.rs  PTY + native OpenSSH sessions
-src-tauri/src/sftp.rs      Host-key-checked SFTP browsing
-```
-
-## v1 limitations
-
-- Files / SFTP is read-only.
-- SFTP does not yet support ProxyJump or interactive password/passphrase prompts.
-- Terminal uses full native OpenSSH behaviour and can use your existing SSH configuration.
-- Code signing and notarisation are not configured in the repository.
-
-## Push to GitHub
-
-After extracting this ZIP, create a new empty repository on GitHub. Then run from the extracted `LocalSSH-github` folder:
-
-```bash
-git init
-git add .
-git commit -m "Initial LocalSSH source"
-git branch -M main
-git remote add origin https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.git
-git push -u origin main
-```
-
-If you created the GitHub repository with a README, licence, or `.gitignore`, either clone that repository first and copy these files into it, or reconcile the remote history before pushing.
-
-The included GitHub Actions workflow runs the JavaScript model tests and frontend build on pushes and pull requests.
+The GitHub workflow then builds a universal macOS application for Apple Silicon and Intel, verifies the packaged icon, and publishes the DMG, app ZIP, icon, and SHA-256 checksums.

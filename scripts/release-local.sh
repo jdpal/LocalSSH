@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-TAG="${1:-v0.1.1}"
+TAG="${1:-v0.2.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -56,14 +56,17 @@ echo "Repository: $REPO_SLUG"
 echo "Commit: $(git rev-parse --short HEAD)"
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm install
+npm ci
 npm test
+npm audit --audit-level=high
 npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+if ! command -v cargo-audit >/dev/null 2>&1; then cargo install cargo-audit --locked --version 0.22.2; fi
+cargo audit --file src-tauri/Cargo.lock
 npm run tauri icon src-tauri/app-icon.png
 
 rm -rf src-tauri/target/universal-apple-darwin/release/bundle
-APPLE_SIGNING_IDENTITY="-" npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+APPLE_SIGNING_IDENTITY="-" npm run tauri build -- --target universal-apple-darwin --bundles app,dmg --locked
 
 BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
 APP_PATH="$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -name 'LocalSSH.app' -print -quit)"

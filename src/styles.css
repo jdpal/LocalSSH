@@ -31,3 +31,4 @@
 .server-scroll::-webkit-scrollbar-track,.file-table-scroll::-webkit-scrollbar-track{background:transparent}
 .server-scroll::-webkit-scrollbar-thumb,.file-table-scroll::-webkit-scrollbar-thumb{background:light-dark(#c6ccd4,#3b434d);border:2px solid transparent;background-clip:padding-box;border-radius:999px}
 .server-scroll::-webkit-scrollbar-thumb:hover,.file-table-scroll::-webkit-scrollbar-thumb:hover{background:light-dark(#aeb6c1,#525c68);background-clip:padding-box}
+.sidebar-actions{display:grid;gap:6px;flex:0 0 auto}.clear-local-data{border:0;background:transparent;color:var(--muted);font-size:11px;padding:6px;cursor:pointer}.clear-local-data:hover{color:#d54b4b;text-decoration:underline}

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag, for example v0.1.1
+        description: Release tag, for example v0.2.0
         required: true
-        default: v0.1.1
+        default: v0.2.0
 
 permissions:
   contents: write
@@ -29,15 +29,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.3.0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6.4.0
         with:
-          node-version: '22'
+          node-version: '22.17.1'
+          cache: npm
 
       - name: Setup Rust targets
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -52,19 +53,28 @@ jobs:
           test "$VERSION" = "$TAURI_VERSION"
           test "$VERSION" = "$CARGO_VERSION"
           test "$VERSION" = "$TAG_VERSION"
+          test -f package-lock.json
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
+
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
 
       - name: Build frontend
         run: npm run build
 
       - name: Check Rust backend
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit --file src-tauri/Cargo.lock
 
       - name: Regenerate application icons
         run: npm run tauri icon src-tauri/app-icon.png
@@ -72,7 +82,7 @@ jobs:
       - name: Build universal macOS app and DMG
         run: |
           rm -rf src-tauri/target/universal-apple-darwin/release/bundle
-          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+          npm run tauri build -- --target universal-apple-darwin --bundles app,dmg --locked
 
       - name: Package release assets
         shell: bash
@@ -90,27 +100,18 @@ jobs:
           test -f "$PLIST_PATH"
           BUNDLE_ICON="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$PLIST_PATH")"
           test "$BUNDLE_ICON" = "icon.icns" -o "$BUNDLE_ICON" = "icon"
-          echo "Verified packaged icon: $ICON_PATH ($BUNDLE_ICON)"
 
           mkdir -p release-assets
-          ditto -c -k --sequesterRsrc --keepParent \
-            "$APP_PATH" \
-            "release-assets/LocalSSH-${VERSION}-macOS-universal.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "release-assets/LocalSSH-${VERSION}-macOS-universal.zip"
           cp "$DMG_PATH" "release-assets/LocalSSH_${VERSION}_macOS_universal.dmg"
           cp src-tauri/app-icon.png release-assets/LocalSSH-icon.png
-
           (
             cd release-assets
-            shasum -a 256 \
-              "LocalSSH_${VERSION}_macOS_universal.dmg" \
-              "LocalSSH-${VERSION}-macOS-universal.zip" \
-              LocalSSH-icon.png > SHA256SUMS.txt
+            shasum -a 256 "LocalSSH_${VERSION}_macOS_universal.dmg" "LocalSSH-${VERSION}-macOS-universal.zip" LocalSSH-icon.png > SHA256SUMS.txt
           )
 
-          ls -lh release-assets
-
       - name: Preserve build assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: LocalSSH-${{ env.VERSION }}-macOS-universal
           path: release-assets/*
@@ -121,15 +122,9 @@ jobs:
         run: |
           set -euo pipefail
           TITLE="LocalSSH ${RELEASE_TAG}"
-
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" \
-              --title "$TITLE" \
-              --notes-file RELEASE_NOTES.md
+            gh release edit "$RELEASE_TAG" --title "$TITLE" --notes-file RELEASE_NOTES.md
             gh release upload "$RELEASE_TAG" release-assets/* --clobber
           else
-            gh release create "$RELEASE_TAG" release-assets/* \
-              --title "$TITLE" \
-              --notes-file RELEASE_NOTES.md \
-              --target "$GITHUB_SHA"
+            gh release create "$RELEASE_TAG" release-assets/* --title "$TITLE" --notes-file RELEASE_NOTES.md --target "$GITHUB_SHA"
           fi

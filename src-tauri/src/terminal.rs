@@ -10,7 +10,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
-use crate::server::ServerProfile;
+use crate::{openssh, server::ServerProfile};
 
 const CONNECTED_MARKER: &str = "__LOCALSSH_CONNECTED__";
 
@@ -47,25 +47,14 @@ struct TerminalExit { session_id: String }
 #[serde(rename_all = "camelCase")]
 struct TerminalConnected { session_id: String }
 
-fn expand_tilde(value: &str) -> String {
-    if value == "~" { return std::env::var("HOME").unwrap_or_else(|_| value.to_string()); }
-    if let Some(rest) = value.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") { return format!("{home}/{rest}"); }
-    }
-    value.to_string()
-}
-
 pub fn build_ssh_args(server: &ServerProfile) -> Vec<String> {
-    let mut args = vec![
-        "-p".to_string(), server.port.to_string(),
-        "-o".to_string(), "PermitLocalCommand=yes".to_string(),
-        "-o".to_string(), format!("LocalCommand=/usr/bin/printf {CONNECTED_MARKER}"),
-    ];
-    if let Some(identity) = server.identity_file.as_deref().filter(|v| !v.trim().is_empty()) {
-        args.push("-i".to_string());
-        args.push(expand_tilde(identity.trim()));
-    }
-    args.push(format!("{}@{}", server.username, server.host));
+    let mut args = openssh::ssh_args(server);
+    let target = args.pop().expect("OpenSSH target");
+    args.push("-o".to_string());
+    args.push("PermitLocalCommand=yes".to_string());
+    args.push("-o".to_string());
+    args.push(format!("LocalCommand=/usr/bin/printf {CONNECTED_MARKER}"));
+    args.push(target);
     args
 }
 
@@ -166,6 +155,12 @@ impl TerminalManager {
         let sessions = self.sessions.lock().map_err(|_| "Terminal session lock is unavailable".to_string())?;
         let session = sessions.get(session_id).ok_or_else(|| "Terminal session not found".to_string())?;
         session.master.resize(PtySize { rows: rows.max(2), cols: cols.max(2), pixel_width: 0, pixel_height: 0 }).map_err(|e| format!("Could not resize terminal: {e}"))
+    }
+
+    pub fn close_all(&self) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            for (_, mut session) in sessions.drain() { let _ = session.child.kill(); }
+        }
     }
 
     pub fn stop(&self, session_id: &str) -> Result<(), String> {

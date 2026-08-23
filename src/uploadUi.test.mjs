@@ -12,7 +12,8 @@ test('exposes local file picking and SFTP upload through the frontend API', () =
 });
 
 test('supports Finder drag and drop plus an Upload button', () => {
-  assert.match(browser, /onDragDropEvent/);
+  assert.match(browser, /local-files-dropped/);
+  assert.doesNotMatch(browser, /onDragDropEvent/);
   assert.match(browser, /Icon name=\"upload\"/);
   assert.match(browser, /Upload<\/button>/);
   assert.match(browser, /upload-status-list/);

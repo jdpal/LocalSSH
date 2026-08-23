@@ -17,16 +17,17 @@ test('local release script validates, builds and uploads release assets', () => 
   const script = read('scripts/release-local.sh');
   assert.match(script, /npm test/);
   assert.match(script, /npm run build/);
-  assert.match(script, /cargo check --manifest-path src-tauri\/Cargo\.toml/);
+  assert.match(script, /cargo check --locked --manifest-path src-tauri\/Cargo\.toml/);
   assert.match(script, /universal-apple-darwin/);
   assert.match(script, /gh release/);
 });
 
-test('release notes describe the v0.1.1 macOS icon fix release', () => {
+test('release notes describe the v0.2.0 security hardening release', () => {
   const notes = read('RELEASE_NOTES.md');
-  assert.match(notes, /LocalSSH v0\.1\.1/);
+  assert.match(notes, /LocalSSH v0\.2\.0/);
   assert.match(notes, /macOS/);
-  assert.match(notes, /icon/i);
+  assert.match(notes, /OpenSSH/i);
+  assert.match(notes, /security/i);
   assert.match(notes, /DMG/);
 });
 
@@ -58,4 +59,18 @@ test('local release script regenerates and validates the packaged macOS icon', (
   assert.match(script, /npm run tauri icon src-tauri\/app-icon\.png/);
   assert.match(script, /Contents\/Resources\/icon\.icns/);
   assert.match(script, /CFBundleIconFile/);
+});
+
+test('v0.2.0 releases use lockfiles and fail on dependency security advisories', () => {
+  const workflow = read('.github/workflows/release.yml');
+  const pkg = JSON.parse(read('package.json'));
+  const tauri = JSON.parse(read('src-tauri/tauri.conf.json'));
+  const cargo = read('src-tauri/Cargo.toml');
+  assert.equal(pkg.version, '0.2.0');
+  assert.equal(tauri.version, '0.2.0');
+  assert.match(cargo, /^version = "0\.2\.0"/m);
+  assert.match(workflow, /npm ci/);
+  assert.match(workflow, /npm audit --audit-level=high/);
+  assert.match(workflow, /cargo audit/);
+  assert.doesNotMatch(workflow, /npm install\s*$/m);
 });

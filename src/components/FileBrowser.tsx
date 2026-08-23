@@ -1,16 +1,16 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { listen } from '@tauri-apps/api/event';
 import { downloadRemote, isTauri, listRemote, pickDownloadDirectory, pickLocalFiles, uploadRemote } from '../api';
 import { sftpAuthAction } from '../sftpAuthModel.js';
 import { parentRemotePath, sortRemoteEntries } from '../sftpModel.js';
 import { remoteUploadTarget, uploadErrorAction } from '../sftpUploadModel.js';
 import { resolveSftpCredentialSummary } from '../credentialModel.js';
 import Icon from './Icon';
-import type { RemoteEntry, ServerProfile } from '../types';
+import type { LocalFileGrant, RemoteEntry, ServerProfile } from '../types';
 
 type Props = { server: ServerProfile | null; active: boolean; onStatus?: (status: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error') => void };
 type UploadState = 'queued' | 'uploading' | 'uploaded' | 'failed' | 'skipped';
-type UploadItem = { id: string; localPath: string; name: string; remotePath: string; status: UploadState; message?: string };
+type UploadItem = { id: string; localFileId: string; name: string; remotePath: string; status: UploadState; message?: string };
 type ConflictPrompt = { name: string; remotePath: string; resolve: (replace: boolean) => void };
 type DownloadState = 'queued' | 'downloading' | 'downloaded' | 'failed';
 type DownloadItem = { id: string; remotePath: string; name: string; status: DownloadState; message?: string };
@@ -21,11 +21,6 @@ function formatSize(size?: number | null) {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
   return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
-
-function localName(localPath: string) {
-  const normalised = localPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  return normalised.slice(normalised.lastIndexOf('/') + 1) || localPath;
 }
 
 export default function FileBrowser({ server, active, onStatus = () => {} }: Props) {
@@ -121,14 +116,14 @@ export default function FileBrowser({ server, active, onStatus = () => {} }: Pro
     setConflict({ name, remotePath, resolve });
   }), []);
 
-  const performUploads = useCallback(async (localPaths: string[]) => {
-    if (!server || localPaths.length === 0) return;
+  const performUploads = useCallback(async (localFiles: LocalFileGrant[]) => {
+    if (!server || localFiles.length === 0) return;
     const password = passwordsRef.current.get(server.id) ?? '';
-    const batch = localPaths.map((localPath) => ({
+    const batch = localFiles.map((localFile) => ({
       id: crypto.randomUUID(),
-      localPath,
-      name: localName(localPath),
-      remotePath: remoteUploadTarget(path, localPath),
+      localFileId: localFile.id,
+      name: localFile.name,
+      remotePath: remoteUploadTarget(path, localFile.name),
       status: 'queued' as UploadState
     }));
     setUploads(batch);
@@ -138,7 +133,7 @@ export default function FileBrowser({ server, active, onStatus = () => {} }: Pro
     for (const item of batch) {
       updateUpload(item.id, { status: 'uploading', message: 'Uploading…' });
       try {
-        await uploadRemote(server.id, item.localPath, path, password || null, false);
+        await uploadRemote(server.id, item.localFileId, path, password || null, false);
         updateUpload(item.id, { status: 'uploaded', message: 'Uploaded' });
         uploadedAny = true;
       } catch (err) {
@@ -150,7 +145,7 @@ export default function FileBrowser({ server, active, onStatus = () => {} }: Pro
             continue;
           }
           try {
-            await uploadRemote(server.id, item.localPath, path, password || null, true);
+            await uploadRemote(server.id, item.localFileId, path, password || null, true);
             updateUpload(item.id, { status: 'uploaded', message: 'Replaced' });
             uploadedAny = true;
           } catch (replaceError) {
@@ -178,15 +173,10 @@ export default function FileBrowser({ server, active, onStatus = () => {} }: Pro
   useEffect(() => {
     if (!active || !server || !isTauri()) return;
     let unlisten: (() => void) | undefined;
-    void getCurrentWebview().onDragDropEvent((event) => {
-      if (event.payload.type === 'enter' || event.payload.type === 'over') {
-        setDropActive(true);
-      } else if (event.payload.type === 'drop') {
-        setDropActive(false);
-        if (!showPasswordPrompt) void performUploads(event.payload.paths);
-      } else {
-        setDropActive(false);
-      }
+    void listen<LocalFileGrant[]>('local-files-dropped', (event) => {
+      if (showPasswordPrompt || event.payload.length === 0) return;
+      setDropActive(false);
+      void performUploads(event.payload);
     }).then((stop) => { unlisten = stop; }).catch((err) => setError(String(err)));
     return () => { unlisten?.(); };
   }, [active, performUploads, server, showPasswordPrompt]);
@@ -228,7 +218,7 @@ export default function FileBrowser({ server, active, onStatus = () => {} }: Pro
     for (const item of batch) {
       updateDownload(item.id, { status: 'downloading', message: 'Downloading…' });
       try {
-        const result = await downloadRemote(server.id, item.remotePath, destination, password || null);
+        const result = await downloadRemote(server.id, item.remotePath, destination.id, password || null);
         updateDownload(item.id, { status: 'downloaded', message: `Saved to ${result.path}` });
       } catch (err) {
         const authAction = sftpAuthAction(err, password);

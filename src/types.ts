@@ -31,3 +31,13 @@ export interface RemoteEntry {
   size?: number | null;
   modified?: number | null;
 }
+
+export interface LocalFileGrant {
+  id: string;
+  name: string;
+}
+
+export interface LocalDirectoryGrant {
+  id: string;
+  name: string;
+}
