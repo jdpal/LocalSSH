@@ -1,24 +1,23 @@
-# LocalSSH v0.2.4
+# LocalSSH v0.2.5
 
-LocalSSH v0.2.4 adds secure first-use SSH host-key onboarding.
+LocalSSH v0.2.5 fixes SFTP upload overwrite detection.
 
-## Added
+## Fixed
 
-- Unknown SSH hosts now show an in-app fingerprint verification dialog instead of failing with a raw OpenSSH `known_hosts` error.
-- The dialog shows the server address, port, host-key type and SHA-256 fingerprint.
-- Users can choose **Cancel** or **Trust & Connect**.
-- Trusted keys are added to the normal macOS `~/.ssh/known_hosts` file and the connection retries automatically.
-- SSH Terminal and Files/SFTP share the same trusted-host state.
+- Uploading a new remote file no longer reports that the file already exists when the destination directory is empty.
+- Removed the invalid OpenSSH SFTP `ls -d` existence probe.
+- Remote existence checks now list the literal parent directory with supported `ls -lan` flags and compare parsed canonical child paths to the exact upload target.
+- Existing files still show the Replace / Cancel confirmation.
+- Hidden files, spaces, and filenames containing SFTP glob characters are checked literally and do not match unrelated entries.
+- Ambiguous SFTP responses return an explicit existence-check error instead of a false overwrite warning.
 
 ## Security
 
-- `StrictHostKeyChecking=yes` remains enabled.
-- Unknown keys are never accepted silently.
-- LocalSSH uses the macOS system OpenSSH `ssh-keyscan` and `ssh-keygen` utilities for host-key discovery and SHA-256 fingerprints.
-- The trust action re-scans the server and refuses to save a key if the fingerprint changed after the user approved it.
-- Existing mismatched host keys remain blocked and are never automatically replaced.
-- Users are instructed to verify new fingerprints with their server provider or another trusted source before trusting them.
-- Existing Keychain, CSP, file-grant and OpenSSH SFTP hardening remains unchanged.
+- LocalSSH continues to use the macOS system OpenSSH client for SSH and SFTP.
+- Strict host-key verification remains enabled.
+- Saved passwords remain in the native macOS Keychain.
+- The restrictive Tauri CSP and opaque local file grants remain enabled.
+- This release does not weaken any v0.2.x security controls.
 
 ## Distribution
 

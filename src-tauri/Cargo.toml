@@ -1,6 +1,6 @@
 [package]
 name = "localssh"
-version = "0.2.4"
+version = "0.2.5"
 description = "Local macOS SSH and SFTP manager"
 authors = ["LocalSSH"]
 edition = "2021"

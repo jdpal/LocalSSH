@@ -53,6 +53,28 @@ fn quote_sftp(value: &str) -> Result<String, String> {
     Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
 }
 
+
+fn quote_sftp_literal(value: &str) -> Result<String, String> {
+    if value.chars().any(char::is_control) {
+        return Err("SFTP_UNSAFE_PATH: File paths containing control characters are not supported".into());
+    }
+
+    let mut escaped = String::with_capacity(value.len() + 8);
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '*' | '?' | '[' | ']' | '{' | '}' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            _ => escaped.push(ch),
+        }
+    }
+
+    Ok(format!("\"{escaped}\""))
+}
+
 fn normalize_remote_path(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.trim().split('/') {
@@ -266,9 +288,42 @@ fn output_is_missing(output: &str) -> bool {
     lower.contains("no such file") || lower.contains("not found") || lower.contains("can't ls") || lower.contains("couldn't stat")
 }
 
+fn looks_like_long_listing_entry(line: &str) -> bool {
+    let Some(mode) = line.trim().split_whitespace().next() else { return false; };
+    mode.len() >= 10 && matches!(mode.as_bytes().first().copied(), Some(b'-' | b'd' | b'l' | b'c' | b'b' | b'p' | b's'))
+}
+
 fn remote_exists(server: &ServerProfile, username: &str, password: Option<&str>, remote_path: &str) -> Result<bool, String> {
-    let output = run_sftp_command(server, username, password, &format!("ls -ld {}", quote_sftp(remote_path)?))?;
-    Ok(!output_is_missing(&output))
+    let canonical_path = normalize_remote_path(remote_path);
+    let parent = remote_parent_path(&canonical_path);
+    let output = run_sftp_command(
+        server,
+        username,
+        password,
+        &format!("ls -lan {}", quote_sftp_literal(&parent)?),
+    )?;
+
+    if output_is_missing(&output) {
+        return Err(format!(
+            "SFTP_EXISTS_CHECK_FAILED: Could not inspect remote parent directory: {parent}. Server response: {}",
+            output.trim()
+        ));
+    }
+
+    let mut saw_listing_entry = false;
+    for line in output.lines() {
+        saw_listing_entry |= looks_like_long_listing_entry(line);
+        if let Some(entry) = parse_ls_line(line, &parent) {
+            if entry.path == canonical_path { return Ok(true); }
+        }
+    }
+
+    if saw_listing_entry { return Ok(false); }
+
+    Err(format!(
+        "SFTP_EXISTS_CHECK_FAILED: Could not confirm whether the remote path exists: {canonical_path}. Server response: {}",
+        output.trim()
+    ))
 }
 
 pub fn list_remote(
@@ -391,4 +446,25 @@ mod tests {
         assert_eq!(entry.name, "Downloads");
         assert_eq!(entry.path, "/home/jatin/Downloads/Downloads");
     }
+
+    #[test]
+    fn literal_exists_probe_escapes_sftp_glob_characters() {
+        assert_eq!(quote_sftp_literal("/tmp/report[1]*?.txt").unwrap(), "\"/tmp/report\\[1\\]\\*\\?.txt\"");
+    }
+    #[test]
+    fn parent_listing_probe_recognizes_valid_long_entries() {
+        assert!(looks_like_long_listing_entry("-rw-r--r-- 1 501 20 42 Aug 24 12:34 file.txt"));
+        assert!(looks_like_long_listing_entry("drwxr-xr-x 2 501 20 64 Aug 24 12:34 folder"));
+        assert!(!looks_like_long_listing_entry("ls: Invalid flag -d"));
+        assert!(!looks_like_long_listing_entry("Failure"));
+    }
+
+
+    #[test]
+    fn missing_output_is_recognized_without_treating_generic_failure_as_missing() {
+        assert!(output_is_missing("Can't ls: No such file or directory"));
+        assert!(!output_is_missing("Failure"));
+        assert!(!output_is_missing("Permission denied"));
+    }
+
 }
