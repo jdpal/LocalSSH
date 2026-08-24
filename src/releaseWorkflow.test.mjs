@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const read = (path) => fs.readFileSync(path, 'utf8');
+const pkg = JSON.parse(read('package.json'));
+const tauri = JSON.parse(read('src-tauri/tauri.conf.json'));
+const cargo = read('src-tauri/Cargo.toml');
+const escapedVersion = pkg.version.replace(/\./g, '\\.');
 
 test('release workflow builds a universal macOS app and publishes named assets', () => {
   const workflow = read('.github/workflows/release.yml');
@@ -22,9 +26,9 @@ test('local release script validates, builds and uploads release assets', () => 
   assert.match(script, /gh release/);
 });
 
-test('release notes describe the v0.2.3 terminal usability hotfix', () => {
+test('release notes describe the current LocalSSH release', () => {
   const notes = read('RELEASE_NOTES.md');
-  assert.match(notes, /LocalSSH v0\.2\.3/);
+  assert.match(notes, new RegExp(`LocalSSH v${escapedVersion}`));
   assert.match(notes, /macOS/);
   assert.match(notes, /OpenSSH/i);
   assert.match(notes, /security/i);
@@ -37,8 +41,7 @@ test('local release artifacts are ignored by Git', () => {
 });
 
 test('Tauri bundle explicitly declares the generated application icons', () => {
-  const config = JSON.parse(read('src-tauri/tauri.conf.json'));
-  assert.deepEqual(config.bundle.icon, [
+  assert.deepEqual(tauri.bundle.icon, [
     'icons/32x32.png',
     'icons/128x128.png',
     'icons/128x128@2x.png',
@@ -61,20 +64,16 @@ test('local release script regenerates and validates the packaged macOS icon', (
   assert.match(script, /CFBundleIconFile/);
 });
 
-test('v0.2.3 releases use lockfiles and fail on dependency security advisories', () => {
+test('release versions stay aligned and security gates use lockfiles', () => {
   const workflow = read('.github/workflows/release.yml');
-  const pkg = JSON.parse(read('package.json'));
-  const tauri = JSON.parse(read('src-tauri/tauri.conf.json'));
-  const cargo = read('src-tauri/Cargo.toml');
-  assert.equal(pkg.version, '0.2.3');
-  assert.equal(tauri.version, '0.2.3');
-  assert.match(cargo, /^version = "0\.2\.3"/m);
+  const cargoVersion = cargo.match(/^version = "([^"]+)"/m)?.[1];
+  assert.equal(tauri.version, pkg.version);
+  assert.equal(cargoVersion, pkg.version);
   assert.match(workflow, /npm ci/);
   assert.match(workflow, /npm audit --audit-level=high/);
   assert.match(workflow, /cargo audit/);
   assert.doesNotMatch(workflow, /npm install\s*$/m);
 });
-
 
 test('Tauri release build forwards --locked to Cargo instead of Tauri CLI', () => {
   const workflow = read('.github/workflows/release.yml');

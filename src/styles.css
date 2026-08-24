@@ -32,3 +32,11 @@
 .server-scroll::-webkit-scrollbar-thumb,.file-table-scroll::-webkit-scrollbar-thumb{background:light-dark(#c6ccd4,#3b434d);border:2px solid transparent;background-clip:padding-box;border-radius:999px}
 .server-scroll::-webkit-scrollbar-thumb:hover,.file-table-scroll::-webkit-scrollbar-thumb:hover{background:light-dark(#aeb6c1,#525c68);background-clip:padding-box}
 .sidebar-actions{display:grid;gap:6px;flex:0 0 auto}.clear-local-data{border:0;background:transparent;color:var(--muted);font-size:11px;padding:6px;cursor:pointer}.clear-local-data:hover{color:#d54b4b;text-decoration:underline}
+
+.host-key-backdrop{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:24px;background:rgba(4,8,15,.58);backdrop-filter:blur(3px)}
+.host-key-dialog{width:min(620px,100%);max-height:min(720px,calc(100vh - 48px));overflow:auto;border:1px solid light-dark(#cfd6df,#303846);border-radius:14px;background:light-dark(#fff,#151a22);color:inherit;padding:20px;box-shadow:0 24px 70px rgba(0,0,0,.3)}
+.host-key-dialog.mismatch{border-color:light-dark(#d89a9a,#7f3f47)}
+.host-key-dialog h2{margin:0 0 6px;font-size:18px}.host-key-dialog p{line-height:1.45}.host-key-host{margin:0 0 16px;font-family:SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:light-dark(#586474,#aab4c2)}
+.host-key-dialog strong{display:block;margin-top:16px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:light-dark(#596474,#aeb7c4)}
+.host-key-dialog pre{margin:7px 0 0;padding:12px;border:1px solid light-dark(#e0e4e9,#2c3440);border-radius:9px;background:light-dark(#f7f8fa,#0d1117);font:12px/1.55 SFMono-Regular,Menlo,Monaco,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.host-key-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}

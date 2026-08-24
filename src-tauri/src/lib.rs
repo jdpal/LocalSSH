@@ -1,5 +1,6 @@
 mod db;
 mod file_grants;
+mod host_keys;
 mod keychain;
 mod openssh;
 mod server;
@@ -12,6 +13,7 @@ use tauri::{Emitter, Manager, State};
 
 use db::Database;
 use file_grants::{FileGrantStore, LocalDirectoryGrant, LocalFileGrant};
+use host_keys::HostKeyCheck;
 use keychain::{CredentialKind, CredentialStore};
 use server::{ServerInput, ServerProfile};
 use sftp::{RemoteDownload, RemoteEntry, RemoteUpload, SftpManager};
@@ -72,6 +74,19 @@ fn clear_local_data(state: State<'_, AppState>) -> Result<(), String> {
     state.db.clear_servers()?;
     state.grants.clear();
     Ok(())
+}
+
+
+#[tauri::command]
+fn host_key_check(state: State<'_, AppState>, server_id: String) -> Result<HostKeyCheck, String> {
+    let server = state.db.get_server(&server_id)?;
+    host_keys::check(&server)
+}
+
+#[tauri::command]
+fn host_key_trust(state: State<'_, AppState>, server_id: String, expected_fingerprints: Vec<String>) -> Result<HostKeyCheck, String> {
+    let server = state.db.get_server(&server_id)?;
+    host_keys::trust(&server, &expected_fingerprints)
 }
 
 #[tauri::command]
@@ -198,6 +213,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_servers, upsert_server, delete_server, clear_local_data,
+            host_key_check, host_key_trust,
             start_ssh, write_ssh, resize_ssh, stop_ssh,
             sftp_close, sftp_list, sftp_upload, sftp_download,
             pick_local_files, pick_download_directory

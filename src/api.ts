@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { LocalDirectoryGrant, LocalFileGrant, RemoteEntry, ServerInput, ServerProfile } from './types';
+import { promptHostKeyTrust, showHostKeyMismatch, type HostKeyCheck } from './hostKeyPrompt';
+
+const trustedHostCache = new Set<string>();
 
 const demoServers: ServerProfile[] = [
   { id: 'demo-web-01', name: 'Web-01', host: '10.20.0.15', port: 22, username: 'jd', groupName: 'Production', favourite: true, useSshCredentialsForSftp: true, hasSshPassword: false, hasSftpPassword: false },
@@ -30,7 +33,9 @@ export async function upsertServer(input: ServerInput): Promise<ServerProfile> {
     browserServers = [...browserServers.filter((item) => item.id !== profile.id), profile];
     return profile;
   }
-  return invoke<ServerProfile>('upsert_server', { input: profileInput, sshPassword, clearSshPassword, sftpPassword, clearSftpPassword });
+  const saved = await invoke<ServerProfile>('upsert_server', { input: profileInput, sshPassword, clearSshPassword, sftpPassword, clearSftpPassword });
+  trustedHostCache.delete(saved.id);
+  return saved;
 }
 
 export async function deleteServer(id: string): Promise<void> {
@@ -38,11 +43,37 @@ export async function deleteServer(id: string): Promise<void> {
     browserServers = browserServers.filter((item) => item.id !== id);
     return;
   }
+  trustedHostCache.delete(id);
   await invoke('delete_server', { id });
+}
+
+async function ensureHostTrusted(serverId: string): Promise<void> {
+  if (!isTauri() || trustedHostCache.has(serverId)) return;
+
+  const check = await invoke<HostKeyCheck>('host_key_check', { serverId });
+  if (check.state === 'trusted') {
+    trustedHostCache.add(serverId);
+    return;
+  }
+
+  if (check.state === 'mismatch') {
+    await showHostKeyMismatch(check);
+    throw new Error(`Host key mismatch for ${check.host}:${check.port}. Connection blocked.`);
+  }
+
+  if (!await promptHostKeyTrust(check)) {
+    throw new Error('Connection cancelled because the host key was not trusted.');
+  }
+
+  const expectedFingerprints = check.fingerprints.map((item) => item.fingerprint);
+  const trusted = await invoke<HostKeyCheck>('host_key_trust', { serverId, expectedFingerprints });
+  if (trusted.state !== 'trusted') throw new Error('Host key trust verification failed.');
+  trustedHostCache.add(serverId);
 }
 
 export async function startSsh(serverId: string, cols: number, rows: number): Promise<string> {
   if (!isTauri()) return `demo-${serverId}-${Date.now()}`;
+  await ensureHostTrusted(serverId);
   return invoke<string>('start_ssh', { serverId, cols, rows });
 }
 
@@ -74,6 +105,7 @@ export async function listRemote(serverId: string, path: string, password: strin
       { name: '.bashrc', path: `${path === '/' ? '' : path}/.bashrc`, kind: 'file', size: 3421, modified: null }
     ];
   }
+  await ensureHostTrusted(serverId);
   return invoke<RemoteEntry[]>('sftp_list', { serverId, path, password });
 }
 
@@ -84,6 +116,7 @@ export async function pickLocalFiles(): Promise<LocalFileGrant[]> {
 
 export async function uploadRemote(serverId: string, localFileId: string, remoteDir: string, password: string | null = null, replace = false): Promise<{ name: string; path: string; size: number }> {
   if (!isTauri()) return { name: localFileId, path: `${remoteDir === '/' ? '' : remoteDir}/${localFileId}`, size: 0 };
+  await ensureHostTrusted(serverId);
   return invoke('sftp_upload', { serverId, localFileId, remoteDir, password, replace });
 }
 
@@ -97,10 +130,12 @@ export async function downloadRemote(serverId: string, remotePath: string, local
     const name = remotePath.replace(/\\/g, '/').split('/').pop() || 'file';
     return { name, path: `${localDirectoryId}/${name}`, size: 0 };
   }
+  await ensureHostTrusted(serverId);
   return invoke('sftp_download', { serverId, remotePath, localDirectoryId, password });
 }
 
 export async function clearLocalData(): Promise<void> {
   if (!isTauri()) { browserServers = []; return; }
+  trustedHostCache.clear();
   await invoke('clear_local_data');
 }
